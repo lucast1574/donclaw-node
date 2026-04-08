@@ -1,0 +1,367 @@
+using System.Text.Json;
+
+namespace DonClaw.Shared.Capabilities;
+
+/// <summary>
+/// System capability - notifications, command execution, etc.
+/// </summary>
+public class SystemCapability : NodeCapabilityBase
+{
+    public override string Category => "system";
+
+    private static readonly string[] _commands = new[]
+    {
+        "system.notify",
+        "system.run",
+        "system.run.prepare",
+        "system.which",
+        "system.execApprovals.get",
+        "system.execApprovals.set"
+    };
+
+    public override IReadOnlyList<string> Commands => _commands;
+
+    public event EventHandler<SystemNotifyArgs>? NotifyRequested;
+
+    private ICommandRunner? _commandRunner;
+    private ExecApprovalPolicy? _approvalPolicy;
+
+    public SystemCapability(IOpenClawLogger logger) : base(logger) { }
+
+    public void SetCommandRunner(ICommandRunner runner) => _commandRunner = runner;
+    public void SetApprovalPolicy(ExecApprovalPolicy policy) => _approvalPolicy = policy;
+
+    public override async Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request)
+    {
+        return request.Command switch
+        {
+            "system.notify" => await HandleNotifyAsync(request),
+            "system.run" => await HandleRunAsync(request),
+            "system.run.prepare" => HandleRunPrepare(request),
+            "system.which" => HandleWhich(request),
+            "system.execApprovals.get" => HandleExecApprovalsGet(),
+            "system.execApprovals.set" => HandleExecApprovalsSet(request),
+            _ => Error($"Unknown command: {request.Command}")
+        };
+    }
+
+    private Task<NodeInvokeResponse> HandleNotifyAsync(NodeInvokeRequest request)
+    {
+        var title = GetStringArg(request.Args, "title", "DonClaw");
+        var body = GetStringArg(request.Args, "body", "");
+        var subtitle = GetStringArg(request.Args, "subtitle");
+        var sound = GetBoolArg(request.Args, "sound", true);
+
+        Logger.Info($"system.notify: {title} - {body}");
+
+        NotifyRequested?.Invoke(this, new SystemNotifyArgs
+        {
+            Title = title ?? "DonClaw",
+            Body = body ?? "",
+            Subtitle = subtitle,
+            PlaySound = sound
+        });
+
+        return Task.FromResult(Success(new { sent = true }));
+    }
+
+    private NodeInvokeResponse HandleWhich(NodeInvokeRequest request)
+    {
+        var bins = new List<string>();
+        if (request.Args.ValueKind != JsonValueKind.Undefined &&
+            request.Args.TryGetProperty("bins", out var binsEl) &&
+            binsEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in binsEl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var bin = item.GetString()?.Trim();
+                    if (!string.IsNullOrEmpty(bin))
+                        bins.Add(bin);
+                }
+            }
+        }
+
+        if (bins.Count == 0)
+            return Error("Missing bins parameter");
+
+        var found = new Dictionary<string, string>();
+        foreach (var bin in bins)
+        {
+            var resolved = ResolveExecutable(bin);
+            if (resolved != null)
+                found[bin] = resolved;
+        }
+
+        Logger.Info($"system.which: queried {bins.Count} bins, found {found.Count}");
+        return Success(new { bins = found });
+    }
+
+    internal static string? ResolveExecutable(string bin)
+    {
+        if (bin.Contains('/') || bin.Contains('\\'))
+            return null;
+
+        var extensions = new List<string>();
+        if (OperatingSystem.IsWindows())
+        {
+            var pathext = Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT;.COM";
+            extensions.AddRange(pathext.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(e => e.ToLowerInvariant()));
+        }
+        else
+        {
+            extensions.Add("");
+        }
+
+        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var dirs = pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var dir in dirs)
+        {
+            foreach (var ext in extensions)
+            {
+                var candidate = Path.Combine(dir, bin + ext);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string FormatExecCommand(string[] argv) => ShellQuoting.FormatExecCommand(argv);
+
+    private static string[]? TryParseArgv(JsonElement requestArgs)
+    {
+        if (requestArgs.ValueKind == JsonValueKind.Undefined ||
+            !requestArgs.TryGetProperty("command", out var cmdEl))
+            return null;
+
+        if (cmdEl.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var item in cmdEl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                    list.Add(item.GetString() ?? "");
+            }
+            return list.Count > 0 ? list.ToArray() : null;
+        }
+
+        if (cmdEl.ValueKind == JsonValueKind.String)
+        {
+            var command = cmdEl.GetString();
+            return command != null ? new[] { command } : null;
+        }
+
+        return null;
+    }
+
+    private NodeInvokeResponse HandleRunPrepare(NodeInvokeRequest request)
+    {
+        var argv = TryParseArgv(request.Args);
+        if (argv == null || argv.Length == 0 || string.IsNullOrWhiteSpace(argv[0]))
+            return Error("Missing command parameter");
+
+        var command = argv[0];
+        var rawCommand = GetStringArg(request.Args, "rawCommand");
+        var cwd = GetStringArg(request.Args, "cwd");
+        var agentId = GetStringArg(request.Args, "agentId");
+        var sessionKey = GetStringArg(request.Args, "sessionKey");
+
+        Logger.Info($"system.run.prepare: {rawCommand} (cwd={cwd ?? "default"})");
+
+        return Success(new
+        {
+            cmdText = rawCommand ?? FormatExecCommand(argv),
+            plan = new { argv, cwd, rawCommand, agentId, sessionKey }
+        });
+    }
+
+    private async Task<NodeInvokeResponse> HandleRunAsync(NodeInvokeRequest request)
+    {
+        if (_commandRunner == null)
+            return Error("Command execution not available");
+
+        var argv = TryParseArgv(request.Args);
+        string? command = argv?[0];
+        string[]? args = argv?.Length > 1 ? argv.Skip(1).ToArray() : null;
+
+        if (argv?.Length == 1 && request.Args.TryGetProperty("args", out var argsEl) &&
+            argsEl.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var item in argsEl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                    list.Add(item.GetString() ?? "");
+            }
+            if (list.Count > 0)
+                args = list.ToArray();
+        }
+
+        if (string.IsNullOrWhiteSpace(command))
+            return Error("Missing command parameter");
+
+        var shell = GetStringArg(request.Args, "shell");
+        var cwd = GetStringArg(request.Args, "cwd");
+        var timeoutMs = GetIntArg(request.Args, "timeoutMs", GetIntArg(request.Args, "timeout", 30000));
+
+        Dictionary<string, string>? env = null;
+        if (request.Args.ValueKind != JsonValueKind.Undefined &&
+            request.Args.TryGetProperty("env", out var envEl) &&
+            envEl.ValueKind == JsonValueKind.Object)
+        {
+            env = new Dictionary<string, string>();
+            foreach (var prop in envEl.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.String)
+                    env[prop.Name] = prop.Value.GetString() ?? "";
+            }
+        }
+
+        var fullCommand = args != null
+            ? FormatExecCommand(new[] { command }.Concat(args).ToArray())
+            : command;
+
+        Logger.Info($"system.run: {fullCommand} (shell={shell ?? "auto"}, timeout={timeoutMs}ms)");
+
+        if (_approvalPolicy != null)
+        {
+            var approval = _approvalPolicy.Evaluate(fullCommand, shell);
+            if (!approval.Allowed)
+            {
+                Logger.Warn($"system.run DENIED: {fullCommand} ({approval.Reason})");
+                return Error($"Command denied by exec policy: {approval.Reason}");
+            }
+        }
+
+        try
+        {
+            var result = await _commandRunner.RunAsync(new CommandRequest
+            {
+                Command = command,
+                Args = args,
+                Shell = shell,
+                Cwd = cwd,
+                TimeoutMs = timeoutMs,
+                Env = env
+            });
+
+            return Success(new
+            {
+                stdout = result.Stdout,
+                stderr = result.Stderr,
+                exitCode = result.ExitCode,
+                timedOut = result.TimedOut,
+                durationMs = result.DurationMs
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("system.run failed", ex);
+            return Error($"Execution failed: {ex.Message}");
+        }
+    }
+
+    private NodeInvokeResponse HandleExecApprovalsGet()
+    {
+        if (_approvalPolicy == null)
+            return Success(new { enabled = false, message = "No exec policy configured" });
+
+        var data = _approvalPolicy.GetPolicyData();
+        return Success(new
+        {
+            enabled = true,
+            defaultAction = data.DefaultAction.ToString().ToLowerInvariant(),
+            rules = data.Rules.Select(r => new
+            {
+                pattern = r.Pattern,
+                action = r.Action.ToString().ToLowerInvariant(),
+                shells = r.Shells,
+                description = r.Description,
+                enabled = r.Enabled
+            }).ToArray()
+        });
+    }
+
+    private NodeInvokeResponse HandleExecApprovalsSet(NodeInvokeRequest request)
+    {
+        if (_approvalPolicy == null)
+            return Error("No exec policy configured");
+
+        try
+        {
+            var rules = new List<ExecApprovalRule>();
+
+            if (request.Args.ValueKind != JsonValueKind.Undefined &&
+                request.Args.TryGetProperty("rules", out var rulesEl) &&
+                rulesEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var ruleEl in rulesEl.EnumerateArray())
+                {
+                    var rule = new ExecApprovalRule();
+
+                    if (ruleEl.TryGetProperty("pattern", out var patEl) && patEl.ValueKind == JsonValueKind.String)
+                        rule.Pattern = patEl.GetString() ?? "*";
+
+                    if (ruleEl.TryGetProperty("action", out var actEl) && actEl.ValueKind == JsonValueKind.String)
+                    {
+                        rule.Action = (actEl.GetString() ?? "deny").ToLowerInvariant() switch
+                        {
+                            "allow" => ExecApprovalAction.Allow,
+                            "prompt" => ExecApprovalAction.Prompt,
+                            _ => ExecApprovalAction.Deny
+                        };
+                    }
+
+                    if (ruleEl.TryGetProperty("description", out var descEl) && descEl.ValueKind == JsonValueKind.String)
+                        rule.Description = descEl.GetString();
+
+                    if (ruleEl.TryGetProperty("enabled", out var enEl) && (enEl.ValueKind == JsonValueKind.True || enEl.ValueKind == JsonValueKind.False))
+                        rule.Enabled = enEl.GetBoolean();
+
+                    if (ruleEl.TryGetProperty("shells", out var shellsEl) && shellsEl.ValueKind == JsonValueKind.Array)
+                    {
+                        rule.Shells = shellsEl.EnumerateArray()
+                            .Where(s => s.ValueKind == JsonValueKind.String)
+                            .Select(s => s.GetString() ?? "")
+                            .ToArray();
+                    }
+
+                    rules.Add(rule);
+                }
+            }
+
+            ExecApprovalAction? defaultAction = null;
+            if (request.Args.TryGetProperty("defaultAction", out var defEl) && defEl.ValueKind == JsonValueKind.String)
+            {
+                defaultAction = (defEl.GetString() ?? "deny").ToLowerInvariant() switch
+                {
+                    "allow" => ExecApprovalAction.Allow,
+                    "prompt" => ExecApprovalAction.Prompt,
+                    _ => ExecApprovalAction.Deny
+                };
+            }
+
+            _approvalPolicy.SetRules(rules, defaultAction);
+            Logger.Info($"Exec approval policy updated: {rules.Count} rules");
+            return Success(new { updated = true, ruleCount = rules.Count });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("execApprovals.set failed", ex);
+            return Error($"Failed to update policy: {ex.Message}");
+        }
+    }
+}
+
+public class SystemNotifyArgs : EventArgs
+{
+    public string Title { get; set; } = "";
+    public string Body { get; set; } = "";
+    public string? Subtitle { get; set; }
+    public bool PlaySound { get; set; } = true;
+}

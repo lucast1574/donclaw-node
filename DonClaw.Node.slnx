@@ -1,0 +1,9 @@
+{
+  "solution": {
+    "path": "DonClaw.Node.slnx",
+    "projects": [
+      "src/DonClaw.Shared/DonClaw.Shared.csproj",
+      "src/DonClaw.Tray.WinUI/DonClaw.Tray.WinUI.csproj"
+    ]
+  }
+}
