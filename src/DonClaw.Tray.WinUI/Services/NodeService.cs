@@ -6,7 +6,7 @@ using System.IO;
 namespace DonClawTray.Services;
 
 /// <summary>
-/// Node service — manages DonClawNodeClient + all capabilities.
+/// Node service — manages DonClawNodeClient + all 11 capabilities.
 /// This is the core of DonClaw Node: it registers all capabilities and connects.
 /// </summary>
 public class NodeService : IDisposable
@@ -16,7 +16,7 @@ public class NodeService : IDisposable
     private DonClawNodeClient? _nodeClient;
     private readonly string _dataPath;
 
-    // Capabilities
+    // Capabilities (11 total)
     private SystemCapability? _systemCapability;
     private CanvasCapability? _canvasCapability;
     private ScreenCapability? _screenCapability;
@@ -25,6 +25,9 @@ public class NodeService : IDisposable
     private AppCapability? _appCapability;
     private FileCapability? _fileCapability;
     private PowerCapability? _powerCapability;
+    private InputCapability? _inputCapability;
+    private ClipboardCapability? _clipboardCapability;
+    private MicrophoneCapability? _microphoneCapability;
 
     // Events
     public event EventHandler<ConnectionStatus>? StatusChanged;
@@ -46,9 +49,6 @@ public class NodeService : IDisposable
         _dataPath = dataPath;
     }
 
-    /// <summary>
-    /// Connect to the DonClaw gateway as a node.
-    /// </summary>
     public async Task ConnectAsync(string gatewayUrl, string token)
     {
         if (_nodeClient != null)
@@ -65,13 +65,12 @@ public class NodeService : IDisposable
 
         _nodeClient.SetPermission("camera.capture", true);
         _nodeClient.SetPermission("screen.capture", true);
+        _nodeClient.SetPermission("microphone.record", true);
+        _nodeClient.SetPermission("input.control", true);
 
         await _nodeClient.ConnectAsync();
     }
 
-    /// <summary>
-    /// Disconnect from the gateway.
-    /// </summary>
     public async Task DisconnectAsync()
     {
         if (_nodeClient != null)
@@ -86,52 +85,65 @@ public class NodeService : IDisposable
     {
         if (_nodeClient == null) return;
 
-        // System: notifications + command execution
+        // 1. System: notifications + command execution
         _systemCapability = new SystemCapability(_logger);
         _systemCapability.NotifyRequested += OnSystemNotify;
         _systemCapability.SetCommandRunner(new LocalCommandRunner(_logger));
         _systemCapability.SetApprovalPolicy(new ExecApprovalPolicy(_dataPath, _logger));
         _nodeClient.RegisterCapability(_systemCapability);
 
-        // Canvas: WebView2-based canvas window
+        // 2. Canvas: WebView2-based canvas window
         _canvasCapability = new CanvasCapability(_logger);
-        // Canvas events are handled in App.xaml.cs where the CanvasWindow lives
         CanvasCapabilityReady?.Invoke(this, _canvasCapability);
         _nodeClient.RegisterCapability(_canvasCapability);
 
-        // Screen: capture + list
+        // 3. Screen: capture + list monitors
         _screenCapability = new ScreenCapability(_logger);
         ScreenCapabilityReady?.Invoke(this, _screenCapability);
         _nodeClient.RegisterCapability(_screenCapability);
 
-        // Camera: list + snap
+        // 4. Camera: list + snap + video clip
         _cameraCapability = new CameraCapability(_logger);
         CameraCapabilityReady?.Invoke(this, _cameraCapability);
         _nodeClient.RegisterCapability(_cameraCapability);
 
-        // Browser: open URLs in default browser (visible to user)
+        // 5. Browser: open URLs/tabs in default browser (VISIBLE to user)
         _browserCapability = new BrowserCapability(_logger);
         _nodeClient.RegisterCapability(_browserCapability);
 
-        // App: launch/list/close/focus apps (visible to user)
+        // 6. App: launch/list/close/focus apps (VISIBLE to user)
         _appCapability = new AppCapability(_logger);
         _nodeClient.RegisterCapability(_appCapability);
 
-        // File: browse/read/open files
+        // 7. File: browse/read/write/edit/tree/grep — full filesystem access for AI code assistance
         _fileCapability = new FileCapability(_logger);
         _nodeClient.RegisterCapability(_fileCapability);
 
-        // Power: shutdown/restart/sleep/lock/status
+        // 8. Power: shutdown/restart/sleep/lock/status
         _powerCapability = new PowerCapability(_logger);
         _nodeClient.RegisterCapability(_powerCapability);
 
-        _logger.Info("All 8 capabilities registered: system, canvas, screen, camera, browser, app, file, power");
+        // 9. Input: keyboard/mouse/macro — enables AI to operate ANY app (games, forms, etc.)
+        _inputCapability = new InputCapability(_logger);
+        _nodeClient.RegisterCapability(_inputCapability);
+
+        // 10. Clipboard: read/write/clear the Windows clipboard
+        _clipboardCapability = new ClipboardCapability(_logger);
+        _nodeClient.RegisterCapability(_clipboardCapability);
+
+        // 11. Microphone: list devices + record audio
+        _microphoneCapability = new MicrophoneCapability(_logger);
+        MicrophoneCapabilityReady?.Invoke(this, _microphoneCapability);
+        _nodeClient.RegisterCapability(_microphoneCapability);
+
+        _logger.Info("All 11 capabilities registered: system, canvas, screen, camera, browser, app, file, power, input, clipboard, microphone");
     }
 
-    // Events for the App to hook into capability setup
+    // Events for the App to hook into platform-specific capability setup
     public event EventHandler<CanvasCapability>? CanvasCapabilityReady;
     public event EventHandler<ScreenCapability>? ScreenCapabilityReady;
     public event EventHandler<CameraCapability>? CameraCapabilityReady;
+    public event EventHandler<MicrophoneCapability>? MicrophoneCapabilityReady;
 
     private void OnNodeStatusChanged(object? sender, ConnectionStatus status)
     {
@@ -141,7 +153,7 @@ public class NodeService : IDisposable
 
     private void OnPairingStatusChanged(object? sender, PairingStatusEventArgs args)
     {
-        _logger.Info($"Pairing status changed: {args.Status} (device: {args.DeviceId.Substring(0, Math.Min(16, args.DeviceId.Length))}...)");
+        _logger.Info($"Pairing status changed: {args.Status}");
         PairingStatusChanged?.Invoke(this, args);
     }
 
