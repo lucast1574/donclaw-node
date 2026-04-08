@@ -1,41 +1,34 @@
-using Microsoft.Win32;
 using System;
+using Microsoft.Win32;
 
-namespace DonClaw.Tray.WinUI.Services;
+namespace DonClaw.Tray.Services;
 
-/// <summary>
-/// Manages Windows auto-start registry entries for DonClaw Node.
-/// </summary>
 public static class AutoStartManager
 {
-    private const string RegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string RegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
     private const string AppName = "DonClawNode";
 
-    public static bool IsAutoStartEnabled()
+    public static bool IsEnabled()
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RegistryKey, false);
+            using var key = Registry.CurrentUser.OpenSubKey(RegKey, false);
             return key?.GetValue(AppName) != null;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
-    public static void SetAutoStart(bool enable)
+    public static void Set(bool enable)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RegistryKey, true);
+            using var key = Registry.CurrentUser.OpenSubKey(RegKey, true);
             if (key == null) return;
-
             if (enable)
             {
-                var exePath = Environment.ProcessPath
-                    ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
-                key.SetValue(AppName, $"\"{exePath}\"");
+                var exe = Environment.ProcessPath ?? "";
+                if (!string.IsNullOrEmpty(exe))
+                    key.SetValue(AppName, $"\"{exe}\"");
             }
             else
             {

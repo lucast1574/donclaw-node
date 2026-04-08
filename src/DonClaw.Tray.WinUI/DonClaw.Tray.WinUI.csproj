@@ -1,58 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <UseWinUI>true</UseWinUI>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>DonClaw.Tray</RootNamespace>
     <Nullable>enable</Nullable>
-    <EnableMsixTooling>true</EnableMsixTooling>
-    <ApplicationIcon>Assets\donclaw.ico</ApplicationIcon>
-    <RootNamespace>DonClawTray</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>DonClawNode</AssemblyName>
     <Version>1.0.0</Version>
-    <DefaultLanguage>en-US</DefaultLanguage>
+    <Product>DonClaw Node</Product>
+    <Description>Connect your PC to DonClaw</Description>
   </PropertyGroup>
-
-  <!-- Unpackaged: traditional EXE distribution -->
-  <PropertyGroup Condition="'$(PackageMsix)' != 'true'">
-    <WindowsPackageType>None</WindowsPackageType>
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
-  </PropertyGroup>
-
-  <!-- MSIX packaged -->
-  <PropertyGroup Condition="'$(PackageMsix)' == 'true'">
-    <WindowsPackageType>MSIX</WindowsPackageType>
-    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
-    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
-    <AppxBundle>Never</AppxBundle>
-    <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\DonClaw.Shared\DonClaw.Shared.csproj" />
   </ItemGroup>
-
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260101001" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
-    <PackageReference Include="WinUIEx" Version="2.9.0" />
-    <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <!-- Copy WebView2Loader.dll to output root for unpackaged app -->
-  <Target Name="CopyWebView2Loader" AfterTargets="Build" Condition="'$(PackageMsix)' != 'true'">
-    <PropertyGroup>
-      <IsArm64Build Condition="'$(Platform)' == 'ARM64' OR '$(RuntimeIdentifier)' == 'win-arm64' OR '$(PROCESSOR_ARCHITECTURE)' == 'ARM64'">true</IsArm64Build>
-      <WebView2LoaderSource Condition="'$(IsArm64Build)' == 'true'">$(OutputPath)runtimes\win-arm64\native\WebView2Loader.dll</WebView2LoaderSource>
-      <WebView2LoaderSource Condition="'$(WebView2LoaderSource)' == ''">$(OutputPath)runtimes\win-x64\native\WebView2Loader.dll</WebView2LoaderSource>
-    </PropertyGroup>
-    <Copy SourceFiles="$(WebView2LoaderSource)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(WebView2LoaderSource)')" />
-  </Target>
-
 </Project>
