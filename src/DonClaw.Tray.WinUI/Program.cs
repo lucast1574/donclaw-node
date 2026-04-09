@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -11,10 +12,15 @@ namespace DonClaw.Tray;
 
 static class Program
 {
+    public const string Version = "3.0.0";
+
     private static NotifyIcon? _trayIcon;
     private static NodeService? _nodeService;
     private static SettingsManager? _settings;
     private static SettingsForm? _settingsForm;
+
+    // Cache loaded logo for tray icon
+    private static Image? _logoImage;
 
     [STAThread]
     static void Main()
@@ -23,7 +29,7 @@ static class Program
         using var mutex = new Mutex(true, "DonClawNodeMutex", out bool created);
         if (!created) { Logger.Info("Already running"); return; }
 
-        Logger.Info("=== DonClaw Node starting ===");
+        Logger.Info($"=== DonClaw Node v{Version} starting ===");
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -35,6 +41,9 @@ static class Program
         if (_settings.AutoStart)
             AutoStartManager.Set(true);
 
+        // Try to load the logo image for the tray icon
+        _logoImage = LoadLogoImage();
+
         // Create node service
         _nodeService = new NodeService(new AppLogger());
         _nodeService.StatusChanged += OnStatusChanged;
@@ -44,11 +53,11 @@ static class Program
         _trayIcon = new NotifyIcon
         {
             Text = "DonClaw Node",
-            Icon = CreateStatusIcon(Color.Gray),
+            Icon = CreateTrayIcon(ConnectionStatus.Disconnected),
             Visible = true
         };
 
-        // Context menu
+        // Context menu (right-click)
         var menu = new ContextMenuStrip();
         menu.Items.Add("⚙️ Settings", null, (_, _) => ShowSettings());
         menu.Items.Add("🔄 Reconnect", null, (_, _) => Reconnect());
@@ -91,6 +100,7 @@ static class Program
         // Cleanup
         _trayIcon.Dispose();
         _nodeService?.Dispose();
+        _logoImage?.Dispose();
         Logger.Info("=== DonClaw Node stopped ===");
     }
 
@@ -100,9 +110,7 @@ static class Program
         {
             _settingsForm = new SettingsForm(_settings!, _nodeService!);
         }
-        _settingsForm.Show();
-        _settingsForm.BringToFront();
-        _settingsForm.Activate();
+        _settingsForm.ShowAtTray();
     }
 
     private static async void Reconnect()
@@ -122,16 +130,14 @@ static class Program
     {
         if (_trayIcon == null) return;
 
-        var (color, text) = status switch
+        _trayIcon.Icon = CreateTrayIcon(status);
+        _trayIcon.Text = status switch
         {
-            ConnectionStatus.Connected => (Color.FromArgb(50, 205, 50), "DonClaw Node — Connected ✓"),
-            ConnectionStatus.Connecting => (Color.FromArgb(255, 200, 50), "DonClaw Node — Connecting..."),
-            ConnectionStatus.Error => (Color.FromArgb(240, 60, 60), "DonClaw Node — Error"),
-            _ => (Color.Gray, "DonClaw Node — Disconnected")
+            ConnectionStatus.Connected => "DonClaw Node — Connected ✓",
+            ConnectionStatus.Connecting => "DonClaw Node — Connecting...",
+            ConnectionStatus.Error => "DonClaw Node — Error",
+            _ => "DonClaw Node — Disconnected"
         };
-
-        _trayIcon.Icon = CreateStatusIcon(color);
-        _trayIcon.Text = text;
 
         if (status == ConnectionStatus.Connected)
             _trayIcon.ShowBalloonTip(2000, "DonClaw Node", "Connected and ready!", ToolTipIcon.Info);
@@ -143,24 +149,108 @@ static class Program
     }
 
     /// <summary>
-    /// Create a simple colored circle icon for the tray. 
-    /// Green = connected, yellow = connecting, red = error, gray = disconnected.
+    /// Try to load the DonClaw logo PNG from Assets (icon_white.png — white logo for dark tray backgrounds).
+    /// Returns null if not found.
     /// </summary>
-    private static Icon CreateStatusIcon(Color color)
+    private static Image? LoadLogoImage()
     {
-        using var bmp = new Bitmap(16, 16);
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "Assets", "icon_white.png");
+            if (File.Exists(path))
+            {
+                // Load into memory stream to avoid file lock
+                var bytes = File.ReadAllBytes(path);
+                var ms = new MemoryStream(bytes);
+                return Image.FromStream(ms);
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Create the tray icon: grey circle with the DonClaw logo inside.
+    /// A small colored status dot (green/yellow/red) appears in the bottom-right corner.
+    /// </summary>
+    private static Icon CreateTrayIcon(ConnectionStatus status)
+    {
+        const int size = 32; // Use 32px for better quality on HiDPI
+        using var bmp = new Bitmap(size, size);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
         g.Clear(Color.Transparent);
 
-        // Dark circle background
-        using var bgBrush = new SolidBrush(Color.FromArgb(30, 30, 36));
-        g.FillEllipse(bgBrush, 0, 0, 15, 15);
+        // Grey circle background
+        using var bgBrush = new SolidBrush(Color.FromArgb(90, 90, 96));
+        g.FillEllipse(bgBrush, 0, 0, size - 1, size - 1);
 
-        // Status color inner circle
-        using var brush = new SolidBrush(color);
-        g.FillEllipse(brush, 3, 3, 9, 9);
+        // Draw DonClaw logo centered inside the circle
+        if (_logoImage != null)
+        {
+            // Scale logo to fit inside circle with padding
+            int logoPad = 7;
+            int logoArea = size - logoPad * 2;
 
-        return Icon.FromHandle(bmp.GetHicon());
+            // The icon_white.png is 232x154, so we need to maintain aspect ratio
+            float aspect = (float)_logoImage.Width / _logoImage.Height;
+            int drawW, drawH;
+            if (aspect > 1)
+            {
+                drawW = logoArea;
+                drawH = (int)(logoArea / aspect);
+            }
+            else
+            {
+                drawH = logoArea;
+                drawW = (int)(logoArea * aspect);
+            }
+            int drawX = (size - drawW) / 2;
+            int drawY = (size - drawH) / 2;
+            g.DrawImage(_logoImage, drawX, drawY, drawW, drawH);
+        }
+        else
+        {
+            // Fallback: draw the DonClaw two-squares logo manually
+            using var logoBrush = new SolidBrush(Color.White);
+            // Two small squares side by side (the DonClaw icon motif)
+            int sq = 6;
+            int gap = 3;
+            int totalW = sq * 2 + gap;
+            int startX = (size - totalW) / 2;
+            int startY = (size - sq) / 2;
+            g.FillRectangle(logoBrush, startX, startY, sq, sq);
+            g.FillRectangle(logoBrush, startX + sq + gap, startY, sq, sq);
+        }
+
+        // Small status indicator dot in bottom-right corner
+        var statusColor = status switch
+        {
+            ConnectionStatus.Connected => Color.FromArgb(50, 205, 50),
+            ConnectionStatus.Connecting => Color.FromArgb(255, 200, 50),
+            ConnectionStatus.Error => Color.FromArgb(240, 60, 60),
+            _ => Color.FromArgb(160, 160, 160) // subtle grey for disconnected
+        };
+
+        int dotSize = 10;
+        int dotX = size - dotSize - 1;
+        int dotY = size - dotSize - 1;
+
+        // Dark outline around the status dot for visibility
+        using var outlineBrush = new SolidBrush(Color.FromArgb(50, 50, 54));
+        g.FillEllipse(outlineBrush, dotX - 1, dotY - 1, dotSize + 2, dotSize + 2);
+
+        using var dotBrush = new SolidBrush(statusColor);
+        g.FillEllipse(dotBrush, dotX, dotY, dotSize, dotSize);
+
+        var hIcon = bmp.GetHicon();
+        var icon = Icon.FromHandle(hIcon);
+        var result = (Icon)icon.Clone();
+        DestroyIcon(hIcon);
+        return result;
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool DestroyIcon(IntPtr handle);
 }
