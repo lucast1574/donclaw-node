@@ -22,12 +22,7 @@ namespace DonClaw.Tray.Services;
 /// </summary>
 public class TextFinder
 {
-    private readonly Logger _logger;
-
-    public TextFinder()
-    {
-        _logger = new Logger();
-    }
+    public TextFinder() { }
 
     /// <summary>
     /// Find all occurrences of text on the current screen.
