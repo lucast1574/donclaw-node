@@ -44,10 +44,10 @@ public class DonClawNodeClient : WebSocketClientBase
     public string FullDeviceId => _deviceIdentity.DeviceId;
 
     protected override int ReceiveBufferSize => 65536;
-    protected override string ClientRole => "donclaw-node";
+    protected override string ClientRole => "node-host";
 
-    // ClientId must match what we sign in payload
-    private const string ClientId = "donclaw-node";
+    // ClientId must be "node-host" — required by the OpenClaw gateway protocol
+    private const string ClientId = "node-host";
 
     public DonClawNodeClient(string gatewayUrl, string token, string dataPath, IOpenClawLogger? logger = null)
         : base(gatewayUrl, token, logger)
