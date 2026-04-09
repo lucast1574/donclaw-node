@@ -98,7 +98,7 @@ public class SettingsForm : Form
         // Double buffer for smooth rendering
         DoubleBuffered = true;
 
-        // --- Title area with logo ---
+        // --- Title area with logo image ---
         var titlePanel = new Panel
         {
             Location = new Point(0, 0),
@@ -106,21 +106,29 @@ public class SettingsForm : Form
             BackColor = Color.FromArgb(24, 24, 28)
         };
 
-        var titleIcon = new Label
+        // Load the DonClaw icon (icon.png — black rounded rect with two white squares)
+        var logoPicture = new PictureBox
         {
-            Text = "\ud83d\udc3e",
-            Font = new Font("Segoe UI", 16),
-            Location = new Point(16, 10),
-            AutoSize = true
+            Size = new Size(28, 28),
+            Location = new Point(16, 12),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BackColor = Color.Transparent
         };
-        titlePanel.Controls.Add(titleIcon);
+        try
+        {
+            var logoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "icon_white.png");
+            if (File.Exists(logoPath))
+                logoPicture.Image = Image.FromFile(logoPath);
+        }
+        catch { }
+        titlePanel.Controls.Add(logoPicture);
 
         var titleLabel = new Label
         {
             Text = "DonClaw Node",
             Font = new Font("Segoe UI", 14, FontStyle.Bold),
             ForeColor = Color.White,
-            Location = new Point(48, 14),
+            Location = new Point(50, 14),
             AutoSize = true
         };
         titlePanel.Controls.Add(titleLabel);
@@ -130,7 +138,7 @@ public class SettingsForm : Form
             Text = $"v{Program.Version}",
             Font = new Font("Segoe UI", 8),
             ForeColor = Color.FromArgb(100, 100, 110),
-            Location = new Point(200, 20),
+            Location = new Point(210, 20),
             AutoSize = true
         };
         titlePanel.Controls.Add(versionLabel);

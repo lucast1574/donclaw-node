@@ -12,7 +12,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "3.0.0";
+    public const string Version = "3.1.0";
 
     private static NotifyIcon? _trayIcon;
     private static NodeService? _nodeService;
