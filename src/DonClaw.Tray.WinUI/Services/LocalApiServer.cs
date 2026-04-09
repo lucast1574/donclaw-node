@@ -47,13 +47,7 @@ public class LocalApiServer : IDisposable
     private readonly int _port;
     private Task? _listenTask;
 
-    /// <summary>Full-screen screenshot: (quality, maxWidth) → JPEG/WebP bytes</summary>
-    public Func<int, int, string, Task<byte[]>>? ScreenshotProvider { get; set; }
-
-    /// <summary>Region screenshot: (x, y, w, h, quality, format) → bytes</summary>
-    public Func<int, int, int, int, int, string, Task<byte[]>>? RegionScreenshotProvider { get; set; }
-
-    /// <summary>Screenshot cache for instant screenshots.</summary>
+    /// <summary>Screenshot cache (used internally by sequence engine, NOT exposed as image endpoint).</summary>
     public ScreenshotCache? Cache { get; set; }
 
     /// <summary>Text finder for local OCR.</summary>
@@ -184,15 +178,6 @@ public class LocalApiServer : IDisposable
                 await SendJson(stream, new { capabilities = caps, totalCommands = caps.Sum(c => c.commands.Count) });
                 break;
 
-            // ── Vision endpoints ──
-            case "/screenshot":
-                await HandleScreenshot(stream, query);
-                break;
-
-            case "/region":
-                await HandleRegion(stream, query);
-                break;
-
             case "/invoke":
                 if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
                 await HandleInvoke(stream, body);
@@ -268,10 +253,6 @@ public class LocalApiServer : IDisposable
                 await HandleOcr(stream);
                 break;
 
-            case "/cached":
-                await HandleCachedScreenshot(stream);
-                break;
-
             case "/sequence":
                 if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
                 await HandleSequence(stream, body);
@@ -344,69 +325,6 @@ public class LocalApiServer : IDisposable
         var req = new NodeInvokeRequest { Id = Guid.NewGuid().ToString(), Command = command, Args = args };
         var res = await cap.ExecuteAsync(req);
         await SendJson(stream, new { ok = res.Ok, payload = res.Payload, error = res.Error });
-    }
-
-    /// <summary>
-    /// Screenshot endpoint with compression options.
-    /// Params: q (quality 1-100), w (max width), fmt (jpeg/webp/png)
-    /// Lower quality + smaller width = fewer tokens when sent to AI.
-    /// </summary>
-    private async Task HandleScreenshot(NetworkStream stream, Dictionary<string, string> query)
-    {
-        if (ScreenshotProvider == null)
-        {
-            await SendError(stream, 503, "Screenshot provider not configured");
-            return;
-        }
-
-        var quality = query.TryGetValue("q", out var qStr) && int.TryParse(qStr, out var q) ? q
-                    : query.TryGetValue("quality", out var q2Str) && int.TryParse(q2Str, out var q2) ? q2 : 60;
-        var maxWidth = query.TryGetValue("w", out var wStr) && int.TryParse(wStr, out var w) ? w
-                     : query.TryGetValue("width", out var w2Str) && int.TryParse(w2Str, out var w2) ? w2 : 960;
-        var fmt = query.TryGetValue("fmt", out var fStr) ? fStr : "jpeg";
-
-        try
-        {
-            var bytes = await ScreenshotProvider(quality, maxWidth, fmt);
-            var contentType = fmt switch { "webp" => "image/webp", "png" => "image/png", _ => "image/jpeg" };
-            await SendResponse(stream, 200, contentType, bytes);
-        }
-        catch (Exception ex)
-        {
-            await SendError(stream, 500, $"Screenshot failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Region capture — only capture a specific area of the screen.
-    /// Much faster and smaller than full screen. Use this for reading specific UI elements.
-    /// Params: x, y, w, h, q (quality), fmt (jpeg/webp)
-    /// </summary>
-    private async Task HandleRegion(NetworkStream stream, Dictionary<string, string> query)
-    {
-        if (RegionScreenshotProvider == null)
-        {
-            await SendError(stream, 503, "Region screenshot not configured");
-            return;
-        }
-
-        var x = query.TryGetValue("x", out var xStr) && int.TryParse(xStr, out var xv) ? xv : 0;
-        var y = query.TryGetValue("y", out var yStr) && int.TryParse(yStr, out var yv) ? yv : 0;
-        var w = query.TryGetValue("w", out var wStr) && int.TryParse(wStr, out var wv) ? wv : 400;
-        var h = query.TryGetValue("h", out var hStr) && int.TryParse(hStr, out var hv) ? hv : 300;
-        var quality = query.TryGetValue("q", out var qStr) && int.TryParse(qStr, out var q) ? q : 70;
-        var fmt = query.TryGetValue("fmt", out var fStr) ? fStr : "jpeg";
-
-        try
-        {
-            var bytes = await RegionScreenshotProvider(x, y, w, h, quality, fmt);
-            var contentType = fmt switch { "webp" => "image/webp", "png" => "image/png", _ => "image/jpeg" };
-            await SendResponse(stream, 200, contentType, bytes);
-        }
-        catch (Exception ex)
-        {
-            await SendError(stream, 500, $"Region capture failed: {ex.Message}");
-        }
     }
 
     /// <summary>
@@ -574,24 +492,6 @@ public class LocalApiServer : IDisposable
         }
     }
 
-    /// <summary>Return the cached screenshot instantly (no capture delay).</summary>
-    private async Task HandleCachedScreenshot(NetworkStream stream)
-    {
-        if (Cache == null)
-        {
-            await SendError(stream, 503, "Screenshot cache not running");
-            return;
-        }
-
-        var jpeg = Cache.GetLatestJpeg();
-        if (jpeg == null || jpeg.Length == 0)
-        {
-            await SendError(stream, 503, "No cached screenshot yet");
-            return;
-        }
-
-        await SendResponse(stream, 200, "image/jpeg", jpeg);
-    }
 
     #region HTTP Response helpers
 
