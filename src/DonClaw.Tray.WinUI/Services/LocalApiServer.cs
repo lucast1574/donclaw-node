@@ -53,6 +53,12 @@ public class LocalApiServer : IDisposable
     /// <summary>Region screenshot: (x, y, w, h, quality, format) → bytes</summary>
     public Func<int, int, int, int, int, string, Task<byte[]>>? RegionScreenshotProvider { get; set; }
 
+    /// <summary>Screenshot cache for instant screenshots.</summary>
+    public ScreenshotCache? Cache { get; set; }
+
+    /// <summary>Text finder for local OCR.</summary>
+    public TextFinder? Finder { get; set; }
+
     public int Port => _port;
 
     public LocalApiServer(int port, IReadOnlyList<INodeCapability> capabilities, IOpenClawLogger logger)
@@ -245,6 +251,24 @@ public class LocalApiServer : IDisposable
                 await HandleShortcut(stream, body, "input.macro");
                 break;
 
+            // ── Hybrid Smart endpoints (local OCR, no AI vision needed) ──
+            case "/find":
+                await HandleFind(stream, method, body, query);
+                break;
+
+            case "/act":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleAct(stream, body);
+                break;
+
+            case "/ocr":
+                await HandleOcr(stream);
+                break;
+
+            case "/cached":
+                await HandleCachedScreenshot(stream);
+                break;
+
             default:
                 await SendError(stream, 404, $"Not found. Try: /ping, /caps, /screenshot, /invoke, /click, /move, /key, /type, /cursor, /macro");
                 break;
@@ -375,6 +399,150 @@ public class LocalApiServer : IDisposable
         {
             await SendError(stream, 500, $"Region capture failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Find text on screen using local OCR. No screenshot sent to AI.
+    /// GET /find?q=Play  or  POST /find {"text": "Play"}
+    /// Returns coordinates ready for clicking.
+    /// </summary>
+    private async Task HandleFind(NetworkStream stream, string method, string body, Dictionary<string, string> query)
+    {
+        if (Finder == null)
+        {
+            await SendError(stream, 503, "OCR not available");
+            return;
+        }
+
+        string searchText;
+        bool exact = false;
+
+        if (method == "POST" && !string.IsNullOrWhiteSpace(body))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            searchText = root.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+            exact = root.TryGetProperty("exact", out var e) && e.GetBoolean();
+        }
+        else
+        {
+            searchText = query.TryGetValue("q", out var q) ? q : "";
+            exact = query.TryGetValue("exact", out var e) && e == "true";
+        }
+
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            await SendError(stream, 400, "Missing search text (q= or text field)");
+            return;
+        }
+
+        var matches = await Finder.FindText(searchText, exact);
+        await SendJson(stream, new { ok = true, query = searchText, count = matches.Count, matches });
+    }
+
+    /// <summary>
+    /// Act: find text on screen + click it in one command.
+    /// POST /act {"text": "Play", "smooth": true}
+    /// This is the power endpoint — one call does: OCR find → smooth click.
+    /// </summary>
+    private async Task HandleAct(NetworkStream stream, string body)
+    {
+        if (Finder == null)
+        {
+            await SendError(stream, 503, "OCR not available");
+            return;
+        }
+
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        var searchText = root.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
+        var smooth = root.TryGetProperty("smooth", out var s) ? s.GetBoolean() : true;
+        var index = root.TryGetProperty("index", out var idx) ? idx.GetInt32() : 0;
+        var button = root.TryGetProperty("button", out var btn) ? btn.GetString() ?? "left" : "left";
+
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            await SendError(stream, 400, "Missing text field");
+            return;
+        }
+
+        // Find
+        var matches = await Finder.FindText(searchText);
+        if (matches.Count == 0)
+        {
+            await SendJson(stream, new { ok = false, error = $"Text '{searchText}' not found on screen", matches = 0 });
+            return;
+        }
+
+        var target = index < matches.Count ? matches[index] : matches[0];
+
+        // Click
+        var clickCommand = smooth ? "input.smoothClick" : "input.mouseClick";
+        var cap = _capabilities.FirstOrDefault(c => c.CanHandle(clickCommand));
+        if (cap == null)
+        {
+            await SendError(stream, 500, "Input capability not found");
+            return;
+        }
+
+        var argsJson = $"{{\"x\":{target.X},\"y\":{target.Y},\"button\":\"{button}\",\"moveDurationMs\":300}}";
+        using var argsDoc = System.Text.Json.JsonDocument.Parse(argsJson);
+
+        var req = new DonClaw.Shared.NodeInvokeRequest
+        {
+            Id = Guid.NewGuid().ToString(),
+            Command = clickCommand,
+            Args = argsDoc.RootElement.Clone()
+        };
+        var res = await cap.ExecuteAsync(req);
+
+        await SendJson(stream, new
+        {
+            ok = res.Ok,
+            action = "click",
+            target = new { text = target.Text, x = target.X, y = target.Y },
+            smooth,
+            totalMatches = matches.Count
+        });
+    }
+
+    /// <summary>Full OCR dump of everything visible on screen.</summary>
+    private async Task HandleOcr(NetworkStream stream)
+    {
+        if (Finder == null)
+        {
+            await SendError(stream, 503, "OCR not available");
+            return;
+        }
+
+        var dump = await Finder.DumpScreenText();
+        await SendJson(stream, new
+        {
+            ok = true,
+            screenWidth = dump.ScreenWidth,
+            screenHeight = dump.ScreenHeight,
+            lines = dump.Lines.Select(l => new { text = l.Text, words = l.Words.Select(w => new { w.Text, w.X, w.Y }) })
+        });
+    }
+
+    /// <summary>Return the cached screenshot instantly (no capture delay).</summary>
+    private async Task HandleCachedScreenshot(NetworkStream stream)
+    {
+        if (Cache == null)
+        {
+            await SendError(stream, 503, "Screenshot cache not running");
+            return;
+        }
+
+        var jpeg = Cache.GetLatestJpeg();
+        if (jpeg == null || jpeg.Length == 0)
+        {
+            await SendError(stream, 503, "No cached screenshot yet");
+            return;
+        }
+
+        await SendResponse(stream, 200, "image/jpeg", jpeg);
     }
 
     #region HTTP Response helpers

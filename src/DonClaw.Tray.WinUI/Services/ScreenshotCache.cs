@@ -1,0 +1,165 @@
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+
+namespace DonClaw.Tray.Services;
+
+/// <summary>
+/// Continuously captures screenshots in the background and caches them.
+/// When a screenshot is requested, returns the latest cached one instantly
+/// instead of waiting for a new capture (~50ms vs ~300ms+).
+/// 
+/// This eliminates the capture latency from the AI control loop.
+/// </summary>
+public class ScreenshotCache : IDisposable
+{
+    private byte[]? _cachedFull;         // Full-res bitmap bytes (raw)
+    private byte[]? _cachedJpeg;         // Pre-compressed JPEG
+    private int _cachedWidth;
+    private int _cachedHeight;
+    private long _cachedAtMs;
+    private readonly object _lock = new();
+    private readonly CancellationTokenSource _cts = new();
+    private Task? _captureLoop;
+
+    /// <summary>How often to capture (ms). Lower = more CPU, fresher screenshots.</summary>
+    public int IntervalMs { get; set; } = 500;
+
+    /// <summary>Pre-compressed JPEG quality for the cache.</summary>
+    public int DefaultQuality { get; set; } = 55;
+
+    /// <summary>Pre-compressed max width.</summary>
+    public int DefaultMaxWidth { get; set; } = 960;
+
+    /// <summary>Age of the current cached screenshot in ms.</summary>
+    public long CacheAgeMs
+    {
+        get
+        {
+            lock (_lock)
+                return _cachedAtMs == 0 ? -1 : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _cachedAtMs;
+        }
+    }
+
+    public void Start()
+    {
+        _captureLoop = Task.Run(CaptureLoop);
+    }
+
+    private async Task CaptureLoop()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                CaptureNow();
+            }
+            catch { }
+
+            try { await Task.Delay(IntervalMs, _cts.Token); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>Force an immediate capture (also called by the loop).</summary>
+    public void CaptureNow()
+    {
+        var screen = Screen.PrimaryScreen!;
+        var w = screen.Bounds.Width;
+        var h = screen.Bounds.Height;
+
+        using var bmp = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
+        }
+
+        // Compress to JPEG at default settings
+        var jpeg = CompressToJpeg(bmp, DefaultQuality, DefaultMaxWidth);
+
+        lock (_lock)
+        {
+            _cachedJpeg = jpeg;
+            _cachedWidth = w;
+            _cachedHeight = h;
+            _cachedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+    }
+
+    /// <summary>Get the latest cached JPEG. Returns instantly.</summary>
+    public byte[]? GetLatestJpeg()
+    {
+        lock (_lock) return _cachedJpeg;
+    }
+
+    /// <summary>Get a fresh screenshot (captures now if cache is older than maxAgeMs).</summary>
+    public byte[] GetFreshJpeg(int maxAgeMs = 300)
+    {
+        if (CacheAgeMs < 0 || CacheAgeMs > maxAgeMs)
+            CaptureNow();
+        lock (_lock) return _cachedJpeg ?? Array.Empty<byte>();
+    }
+
+    /// <summary>Capture a specific region as JPEG.</summary>
+    public byte[] CaptureRegion(int x, int y, int w, int h, int quality = 70)
+    {
+        var screen = Screen.PrimaryScreen!;
+        w = Math.Min(w, screen.Bounds.Width - x);
+        h = Math.Min(h, screen.Bounds.Height - y);
+        if (w <= 0 || h <= 0) return Array.Empty<byte>();
+
+        using var bmp = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(x, y, 0, 0, new Size(w, h));
+        }
+
+        return CompressToJpeg(bmp, quality, 0);
+    }
+
+    /// <summary>Get screen dimensions.</summary>
+    public (int width, int height) GetScreenSize()
+    {
+        var screen = Screen.PrimaryScreen!;
+        return (screen.Bounds.Width, screen.Bounds.Height);
+    }
+
+    private static byte[] CompressToJpeg(Bitmap bmp, int quality, int maxWidth)
+    {
+        Bitmap output = bmp;
+        bool needsDispose = false;
+
+        if (maxWidth > 0 && bmp.Width > maxWidth)
+        {
+            float scale = (float)maxWidth / bmp.Width;
+            int newH = (int)(bmp.Height * scale);
+            output = new Bitmap(bmp, maxWidth, newH);
+            needsDispose = true;
+        }
+
+        try
+        {
+            using var ms = new MemoryStream();
+            var encoder = ImageCodecInfo.GetImageEncoders()
+                .First(e => e.FormatID == ImageFormat.Jpeg.Guid);
+            var prms = new EncoderParameters(1);
+            prms.Param[0] = new EncoderParameter(Encoder.Quality, (long)Math.Clamp(quality, 1, 100));
+            output.Save(ms, encoder, prms);
+            return ms.ToArray();
+        }
+        finally
+        {
+            if (needsDispose) output.Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+    }
+}

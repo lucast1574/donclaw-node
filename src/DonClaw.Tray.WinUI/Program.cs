@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "5.2.0";
+    public const string Version = "6.0.0";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -21,6 +21,8 @@ static class Program
     private static SettingsManager? _settings;
     private static SettingsForm? _settingsForm;
     private static LocalApiServer? _localApi;
+    private static ScreenshotCache? _screenshotCache;
+    private static TextFinder? _textFinder;
 
     // Cache loaded logo for tray icon
     private static Image? _logoImage;
@@ -83,10 +85,19 @@ static class Program
                 ShowSettings();
         };
 
+        // Start screenshot cache (background capture loop)
+        _screenshotCache = new ScreenshotCache();
+        _screenshotCache.Start();
+
+        // Start text finder (local OCR)
+        _textFinder = new TextFinder();
+
         // Start local API server (direct HTTP access to capabilities)
         _localApi = new LocalApiServer(LocalApiPort, _nodeService.GetCapabilities(), new AppLogger());
         _localApi.ScreenshotProvider = TakeScreenshot;
         _localApi.RegionScreenshotProvider = TakeRegionScreenshot;
+        _localApi.Cache = _screenshotCache;
+        _localApi.Finder = _textFinder;
         _localApi.Start();
 
         // Auto-connect if configured
@@ -107,6 +118,7 @@ static class Program
         Application.Run();
 
         // Cleanup
+        _screenshotCache?.Dispose();
         _localApi?.Dispose();
         _trayIcon.Dispose();
         _nodeService?.Dispose();
