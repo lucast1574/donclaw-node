@@ -12,12 +12,14 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "3.1.0";
+    public const string Version = "3.2.0";
+    public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
     private static NodeService? _nodeService;
     private static SettingsManager? _settings;
     private static SettingsForm? _settingsForm;
+    private static LocalApiServer? _localApi;
 
     // Cache loaded logo for tray icon
     private static Image? _logoImage;
@@ -80,6 +82,10 @@ static class Program
                 ShowSettings();
         };
 
+        // Start local API server (direct HTTP access to capabilities)
+        _localApi = new LocalApiServer(LocalApiPort, _nodeService.GetCapabilities(), new AppLogger());
+        _localApi.Start();
+
         // Auto-connect if configured
         if (_settings.IsConfigured)
         {
@@ -98,6 +104,7 @@ static class Program
         Application.Run();
 
         // Cleanup
+        _localApi?.Dispose();
         _trayIcon.Dispose();
         _nodeService?.Dispose();
         _logoImage?.Dispose();

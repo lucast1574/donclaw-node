@@ -21,7 +21,14 @@ public class NodeService : IDisposable
     public bool IsPendingApproval => _client?.IsPendingApproval ?? false;
     public bool IsPaired => _client?.IsPaired ?? false;
 
-    public NodeService(IOpenClawLogger logger) { _logger = logger; }
+    public NodeService(IOpenClawLogger logger)
+    {
+        _logger = logger;
+        InitializeCapabilities();
+    }
+
+    /// <summary>Get all registered capabilities (for local API server).</summary>
+    public IReadOnlyList<INodeCapability> GetCapabilities() => _capabilities.AsReadOnly();
 
     public async Task ConnectAsync(string host, string token)
     {
@@ -41,7 +48,7 @@ public class NodeService : IDisposable
         _client.PairingStatusChanged += (_, a) => PairingStatusChanged?.Invoke(this, a);
         _client.InvokeReceived += (_, r) => _logger.Info($"Invoke: {r.Command}");
 
-        RegisterAllCapabilities();
+        RegisterCapabilitiesWithClient();
         await _client.ConnectAsync();
     }
 
@@ -51,48 +58,56 @@ public class NodeService : IDisposable
         CurrentStatus = ConnectionStatus.Disconnected;
     }
 
-    private void RegisterAllCapabilities()
+    /// <summary>Create all capabilities upfront (available to local API immediately).</summary>
+    private void InitializeCapabilities()
     {
-        if (_client == null) return;
-
         // 1. System
         var sys = new SystemCapability(_logger);
         sys.SetCommandRunner(new LocalCommandRunner(_logger));
         sys.SetApprovalPolicy(new ExecApprovalPolicy(SettingsManager.DataPath, _logger));
         sys.NotifyRequested += (_, a) => NotifyRequested?.Invoke(this, a);
-        _client.RegisterCapability(sys);
+        _capabilities.Add(sys);
 
         // 2. Screen
-        _client.RegisterCapability(new ScreenCapability(_logger));
+        _capabilities.Add(new ScreenCapability(_logger));
 
         // 3. Camera
-        _client.RegisterCapability(new CameraCapability(_logger));
+        _capabilities.Add(new CameraCapability(_logger));
 
         // 4. Canvas
-        _client.RegisterCapability(new CanvasCapability(_logger));
+        _capabilities.Add(new CanvasCapability(_logger));
 
         // 5. Browser
-        _client.RegisterCapability(new BrowserCapability(_logger));
+        _capabilities.Add(new BrowserCapability(_logger));
 
         // 6. App
-        _client.RegisterCapability(new AppCapability(_logger));
+        _capabilities.Add(new AppCapability(_logger));
 
         // 7. File
-        _client.RegisterCapability(new FileCapability(_logger));
+        _capabilities.Add(new FileCapability(_logger));
 
         // 8. Power
-        _client.RegisterCapability(new PowerCapability(_logger));
+        _capabilities.Add(new PowerCapability(_logger));
 
         // 9. Input
-        _client.RegisterCapability(new InputCapability(_logger));
+        _capabilities.Add(new InputCapability(_logger));
 
         // 10. Clipboard
-        _client.RegisterCapability(new ClipboardCapability(_logger));
+        _capabilities.Add(new ClipboardCapability(_logger));
 
         // 11. Microphone
-        _client.RegisterCapability(new MicrophoneCapability(_logger));
+        _capabilities.Add(new MicrophoneCapability(_logger));
 
-        _logger.Info("Registered 11 capabilities");
+        _logger.Info($"Initialized {_capabilities.Count} capabilities");
+    }
+
+    /// <summary>Register already-created capabilities with the WS client.</summary>
+    private void RegisterCapabilitiesWithClient()
+    {
+        if (_client == null) return;
+        foreach (var cap in _capabilities)
+            _client.RegisterCapability(cap);
+        _logger.Info($"Registered {_capabilities.Count} capabilities with client");
     }
 
     public void Dispose() { _client?.Dispose(); }
