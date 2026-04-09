@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using DonClaw.Shared;
 using DonClaw.Shared.Capabilities;
@@ -8,6 +9,7 @@ namespace DonClaw.Tray.Services;
 public class NodeService : IDisposable
 {
     private readonly IOpenClawLogger _logger;
+    private readonly List<INodeCapability> _capabilities = new();
     private DonClawNodeClient? _client;
 
     public event EventHandler<ConnectionStatus>? StatusChanged;

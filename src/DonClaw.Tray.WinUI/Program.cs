@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "3.2.0";
+    public const string Version = "4.0.0";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -84,6 +85,7 @@ static class Program
 
         // Start local API server (direct HTTP access to capabilities)
         _localApi = new LocalApiServer(LocalApiPort, _nodeService.GetCapabilities(), new AppLogger());
+        _localApi.ScreenshotProvider = TakeScreenshotJpeg;
         _localApi.Start();
 
         // Auto-connect if configured
@@ -260,4 +262,47 @@ static class Program
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    /// <summary>
+    /// Capture the primary screen as JPEG bytes using GDI+ (BitBlt).
+    /// Works in any Windows session without special permissions.
+    /// </summary>
+    private static Task<byte[]> TakeScreenshotJpeg(int quality, int scalePercent)
+    {
+        return Task.Run(() =>
+        {
+            var screen = Screen.PrimaryScreen!;
+            var w = screen.Bounds.Width;
+            var h = screen.Bounds.Height;
+
+            using var bmp = new Bitmap(w, h);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
+            }
+
+            Bitmap output = bmp;
+            bool needsDispose = false;
+
+            if (scalePercent > 0 && scalePercent < 100)
+            {
+                int sw = w * scalePercent / 100;
+                int sh = h * scalePercent / 100;
+                output = new Bitmap(bmp, sw, sh);
+                needsDispose = true;
+            }
+
+            using var ms = new MemoryStream();
+            var encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
+                .First(e => e.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
+            var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
+            encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                System.Drawing.Imaging.Encoder.Quality, (long)Math.Clamp(quality, 1, 100));
+            output.Save(ms, encoder, encoderParams);
+
+            if (needsDispose) output.Dispose();
+
+            return ms.ToArray();
+        });
+    }
 }

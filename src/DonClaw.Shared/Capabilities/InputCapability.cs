@@ -28,6 +28,7 @@ public class InputCapability : NodeCapabilityBase
         "input.keyPress", "input.keyDown", "input.keyUp", "input.type",
         "input.mouseMove", "input.mouseClick", "input.mouseDown", "input.mouseUp",
         "input.mouseScroll", "input.mouseDrag",
+        "input.smoothMove", "input.smoothClick",
         "input.combo", "input.macro", "input.getCursorPos"
     };
 
@@ -100,6 +101,11 @@ public class InputCapability : NodeCapabilityBase
 
     public InputCapability(IOpenClawLogger logger) : base(logger) { }
 
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
+    private const int SM_CXSCREEN = 0;
+    private const int SM_CYSCREEN = 1;
+
     public override async Task<NodeInvokeResponse> ExecuteAsync(NodeInvokeRequest request)
     {
         return request.Command switch
@@ -114,6 +120,8 @@ public class InputCapability : NodeCapabilityBase
             "input.mouseUp" => HandleMouseUp(request),
             "input.mouseScroll" => HandleMouseScroll(request),
             "input.mouseDrag" => await HandleMouseDragAsync(request),
+            "input.smoothMove" => await HandleSmoothMoveAsync(request),
+            "input.smoothClick" => await HandleSmoothClickAsync(request),
             "input.combo" => HandleCombo(request),
             "input.macro" => await HandleMacroAsync(request),
             "input.getCursorPos" => HandleGetCursorPos(),
@@ -486,6 +494,103 @@ public class InputCapability : NodeCapabilityBase
 
         Logger.Info($"input.macro: completed {stepCount} steps");
         return Success(new { completed = true, stepsExecuted = stepCount });
+    }
+
+    /// <summary>
+    /// Smoothly move the cursor to a target position with visible animation.
+    /// The user sees the cursor glide across the screen — feels natural and innovative.
+    /// Uses an ease-out curve for a human-like deceleration effect.
+    /// </summary>
+    private async Task<NodeInvokeResponse> HandleSmoothMoveAsync(NodeInvokeRequest request)
+    {
+        var targetX = GetIntArg(request.Args, "x", -1);
+        var targetY = GetIntArg(request.Args, "y", -1);
+        var durationMs = GetIntArg(request.Args, "durationMs", 300);
+        var steps = GetIntArg(request.Args, "steps", 30);
+
+        if (targetX < 0 || targetY < 0) return Error("Missing x/y coordinates");
+
+        GetCursorPos(out var startPos);
+        Logger.Info($"input.smoothMove: ({startPos.X},{startPos.Y}) → ({targetX},{targetY}) in {durationMs}ms");
+
+        var stepDelay = Math.Max(1, durationMs / steps);
+
+        for (int i = 1; i <= steps; i++)
+        {
+            // Ease-out cubic: starts fast, decelerates smoothly
+            float t = (float)i / steps;
+            float eased = 1f - (1f - t) * (1f - t) * (1f - t);
+
+            var cx = (int)(startPos.X + (targetX - startPos.X) * eased);
+            var cy = (int)(startPos.Y + (targetY - startPos.Y) * eased);
+            SetCursorPos(cx, cy);
+            await Task.Delay(stepDelay);
+        }
+
+        // Ensure we land exactly on target
+        SetCursorPos(targetX, targetY);
+
+        return Success(new { moved = true, from = new { x = startPos.X, y = startPos.Y }, to = new { x = targetX, y = targetY }, durationMs, steps });
+    }
+
+    /// <summary>
+    /// Smooth click: glide cursor to target, brief pause, then click.
+    /// This is the showcase feature — the user sees the AI "thinking" and moving
+    /// the cursor like a human would, then clicking. Very visual and impressive.
+    /// </summary>
+    private async Task<NodeInvokeResponse> HandleSmoothClickAsync(NodeInvokeRequest request)
+    {
+        var targetX = GetIntArg(request.Args, "x", -1);
+        var targetY = GetIntArg(request.Args, "y", -1);
+        var button = GetStringArg(request.Args, "button", "left");
+        var moveDurationMs = GetIntArg(request.Args, "moveDurationMs", 300);
+        var pauseMs = GetIntArg(request.Args, "pauseMs", 80);
+        var doubleClick = GetBoolArg(request.Args, "double", false);
+
+        if (targetX < 0 || targetY < 0) return Error("Missing x/y coordinates");
+
+        GetCursorPos(out var startPos);
+        Logger.Info($"input.smoothClick: ({startPos.X},{startPos.Y}) → ({targetX},{targetY}) then {button} click");
+
+        // Phase 1: Smooth move
+        int steps = 25;
+        int stepDelay = Math.Max(1, moveDurationMs / steps);
+
+        for (int i = 1; i <= steps; i++)
+        {
+            float t = (float)i / steps;
+            float eased = 1f - (1f - t) * (1f - t) * (1f - t);
+            var cx = (int)(startPos.X + (targetX - startPos.X) * eased);
+            var cy = (int)(startPos.Y + (targetY - startPos.Y) * eased);
+            SetCursorPos(cx, cy);
+            await Task.Delay(stepDelay);
+        }
+        SetCursorPos(targetX, targetY);
+
+        // Phase 2: Brief pause (mimics human "aiming")
+        await Task.Delay(pauseMs);
+
+        // Phase 3: Click
+        var (downFlag, upFlag) = button?.ToLowerInvariant() switch
+        {
+            "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+            "middle" => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
+        };
+
+        SendMouseEvent(downFlag);
+        await Task.Delay(30); // Human-like hold
+        SendMouseEvent(upFlag);
+
+        if (doubleClick)
+        {
+            await Task.Delay(80);
+            SendMouseEvent(downFlag);
+            await Task.Delay(30);
+            SendMouseEvent(upFlag);
+        }
+
+        return Success(new { clicked = true, button, x = targetX, y = targetY, smooth = true, doubleClick });
     }
 
     private NodeInvokeResponse HandleGetCursorPos()
