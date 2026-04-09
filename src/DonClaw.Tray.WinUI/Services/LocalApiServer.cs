@@ -16,15 +16,27 @@ namespace DonClaw.Tray.Services;
 /// Lightweight HTTP server using raw TcpListener (no admin privileges needed).
 /// Exposes all DonClaw Node capabilities over a local HTTP API.
 /// 
-/// Endpoints:
-///   GET  /ping                        → health check
-///   GET  /caps                        → list capabilities and commands
-///   GET  /screenshot?quality=70&amp;scale=0.5  → JPEG screenshot
-///   POST /invoke                      → invoke any capability command
-///   POST /click                       → shortcut: click at x,y
-///   POST /move                        → shortcut: move cursor to x,y
-///   POST /key                         → shortcut: press a key
-///   POST /type                        → shortcut: type text
+/// HYBRID APPROACH: commands for navigation, vision for in-app interaction.
+///
+/// ── Fast command endpoints (no screenshots, no tokens) ──
+///   POST /open     {"url": "..."}        → open URL in browser
+///   POST /launch   {"path": "..."}       → launch app
+///   POST /focus    {"name": "chrome"}    → focus app window
+///   POST /notify   {"title","body"}      → show notification
+///
+/// ── Vision endpoints (for in-app interaction) ──
+///   GET  /screenshot?q=60&amp;w=960&amp;fmt=webp  → compressed screenshot
+///   GET  /region?x=0&amp;y=0&amp;w=500&amp;h=300&amp;q=50 → capture region only
+///   POST /click    {"x","y"}             → instant click
+///   POST /smooth   {"x","y"}             → smooth visible click
+///   POST /move     {"x","y"}             → move cursor
+///   POST /key      {"key": "enter"}      → press key
+///   POST /type     {"text": "..."}        → type text
+///   POST /macro    {"steps": [...]}       → multi-step macro
+///
+/// ── General ──
+///   GET  /ping, /caps, /cursor
+///   POST /invoke   {"command","args"}     → invoke any capability
 /// </summary>
 public class LocalApiServer : IDisposable
 {
@@ -35,8 +47,11 @@ public class LocalApiServer : IDisposable
     private readonly int _port;
     private Task? _listenTask;
 
-    // Screenshot function injected from WinForms context (needs UI thread for some capture methods)
-    public Func<int, int, Task<byte[]>>? ScreenshotProvider { get; set; }
+    /// <summary>Full-screen screenshot: (quality, maxWidth) → JPEG/WebP bytes</summary>
+    public Func<int, int, string, Task<byte[]>>? ScreenshotProvider { get; set; }
+
+    /// <summary>Region screenshot: (x, y, w, h, quality, format) → bytes</summary>
+    public Func<int, int, int, int, int, string, Task<byte[]>>? RegionScreenshotProvider { get; set; }
 
     public int Port => _port;
 
@@ -160,8 +175,13 @@ public class LocalApiServer : IDisposable
                 await SendJson(stream, new { capabilities = caps, totalCommands = caps.Sum(c => c.commands.Count) });
                 break;
 
+            // ── Vision endpoints ──
             case "/screenshot":
                 await HandleScreenshot(stream, query);
+                break;
+
+            case "/region":
+                await HandleRegion(stream, query);
                 break;
 
             case "/invoke":
@@ -169,10 +189,36 @@ public class LocalApiServer : IDisposable
                 await HandleInvoke(stream, body);
                 break;
 
-            // ── Shortcuts for common actions ──
+            // ── Fast command endpoints (no vision needed) ──
+            case "/open":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleShortcut(stream, body, "browser.open");
+                break;
+
+            case "/launch":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleShortcut(stream, body, "app.launch");
+                break;
+
+            case "/focus":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleShortcut(stream, body, "app.focus");
+                break;
+
+            case "/notify":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleShortcut(stream, body, "system.notify");
+                break;
+
+            // ── Input shortcuts ──
             case "/click":
                 if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
                 await HandleShortcut(stream, body, "input.mouseClick");
+                break;
+
+            case "/smooth":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleShortcut(stream, body, "input.smoothClick");
                 break;
 
             case "/move":
@@ -268,6 +314,11 @@ public class LocalApiServer : IDisposable
         await SendJson(stream, new { ok = res.Ok, payload = res.Payload, error = res.Error });
     }
 
+    /// <summary>
+    /// Screenshot endpoint with compression options.
+    /// Params: q (quality 1-100), w (max width), fmt (jpeg/webp/png)
+    /// Lower quality + smaller width = fewer tokens when sent to AI.
+    /// </summary>
     private async Task HandleScreenshot(NetworkStream stream, Dictionary<string, string> query)
     {
         if (ScreenshotProvider == null)
@@ -276,17 +327,53 @@ public class LocalApiServer : IDisposable
             return;
         }
 
-        var quality = query.TryGetValue("quality", out var qStr) && int.TryParse(qStr, out var q) ? q : 70;
-        var scale = query.TryGetValue("scale", out var sStr) && int.TryParse(sStr, out var s) ? s : 100;
+        var quality = query.TryGetValue("q", out var qStr) && int.TryParse(qStr, out var q) ? q
+                    : query.TryGetValue("quality", out var q2Str) && int.TryParse(q2Str, out var q2) ? q2 : 60;
+        var maxWidth = query.TryGetValue("w", out var wStr) && int.TryParse(wStr, out var w) ? w
+                     : query.TryGetValue("width", out var w2Str) && int.TryParse(w2Str, out var w2) ? w2 : 960;
+        var fmt = query.TryGetValue("fmt", out var fStr) ? fStr : "jpeg";
 
         try
         {
-            var jpegBytes = await ScreenshotProvider(quality, scale);
-            await SendResponse(stream, 200, "image/jpeg", jpegBytes);
+            var bytes = await ScreenshotProvider(quality, maxWidth, fmt);
+            var contentType = fmt switch { "webp" => "image/webp", "png" => "image/png", _ => "image/jpeg" };
+            await SendResponse(stream, 200, contentType, bytes);
         }
         catch (Exception ex)
         {
             await SendError(stream, 500, $"Screenshot failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Region capture — only capture a specific area of the screen.
+    /// Much faster and smaller than full screen. Use this for reading specific UI elements.
+    /// Params: x, y, w, h, q (quality), fmt (jpeg/webp)
+    /// </summary>
+    private async Task HandleRegion(NetworkStream stream, Dictionary<string, string> query)
+    {
+        if (RegionScreenshotProvider == null)
+        {
+            await SendError(stream, 503, "Region screenshot not configured");
+            return;
+        }
+
+        var x = query.TryGetValue("x", out var xStr) && int.TryParse(xStr, out var xv) ? xv : 0;
+        var y = query.TryGetValue("y", out var yStr) && int.TryParse(yStr, out var yv) ? yv : 0;
+        var w = query.TryGetValue("w", out var wStr) && int.TryParse(wStr, out var wv) ? wv : 400;
+        var h = query.TryGetValue("h", out var hStr) && int.TryParse(hStr, out var hv) ? hv : 300;
+        var quality = query.TryGetValue("q", out var qStr) && int.TryParse(qStr, out var q) ? q : 70;
+        var fmt = query.TryGetValue("fmt", out var fStr) ? fStr : "jpeg";
+
+        try
+        {
+            var bytes = await RegionScreenshotProvider(x, y, w, h, quality, fmt);
+            var contentType = fmt switch { "webp" => "image/webp", "png" => "image/png", _ => "image/jpeg" };
+            await SendResponse(stream, 200, contentType, bytes);
+        }
+        catch (Exception ex)
+        {
+            await SendError(stream, 500, $"Region capture failed: {ex.Message}");
         }
     }
 

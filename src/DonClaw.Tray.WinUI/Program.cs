@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "4.0.1";
+    public const string Version = "5.0.0";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -85,7 +85,8 @@ static class Program
 
         // Start local API server (direct HTTP access to capabilities)
         _localApi = new LocalApiServer(LocalApiPort, _nodeService.GetCapabilities(), new AppLogger());
-        _localApi.ScreenshotProvider = TakeScreenshotJpeg;
+        _localApi.ScreenshotProvider = TakeScreenshot;
+        _localApi.RegionScreenshotProvider = TakeRegionScreenshot;
         _localApi.Start();
 
         // Auto-connect if configured
@@ -264,10 +265,11 @@ static class Program
     private static extern bool DestroyIcon(IntPtr handle);
 
     /// <summary>
-    /// Capture the primary screen as JPEG bytes using GDI+ (BitBlt).
-    /// Works in any Windows session without special permissions.
+    /// Full-screen capture with format support (jpeg/png) and max-width scaling.
+    /// Smaller maxWidth = smaller file = fewer AI tokens = faster processing.
+    /// Default: 960px wide JPEG at q60 ≈ 30-60KB (vs 300KB+ at full res).
     /// </summary>
-    private static Task<byte[]> TakeScreenshotJpeg(int quality, int scalePercent)
+    private static Task<byte[]> TakeScreenshot(int quality, int maxWidth, string format)
     {
         return Task.Run(() =>
         {
@@ -281,28 +283,76 @@ static class Program
                 g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
             }
 
-            Bitmap output = bmp;
-            bool needsDispose = false;
+            return CompressImage(bmp, quality, maxWidth, format);
+        });
+    }
 
-            if (scalePercent > 0 && scalePercent < 100)
+    /// <summary>
+    /// Region capture — only grab a specific rectangle of the screen.
+    /// Use this to read specific UI elements without capturing the whole screen.
+    /// Much smaller and faster than full-screen capture.
+    /// </summary>
+    private static Task<byte[]> TakeRegionScreenshot(int x, int y, int w, int h, int quality, string format)
+    {
+        return Task.Run(() =>
+        {
+            // Clamp to screen bounds
+            var screen = Screen.PrimaryScreen!;
+            w = Math.Min(w, screen.Bounds.Width - x);
+            h = Math.Min(h, screen.Bounds.Height - y);
+            if (w <= 0 || h <= 0) throw new ArgumentException("Invalid region");
+
+            using var bmp = new Bitmap(w, h);
+            using (var g = Graphics.FromImage(bmp))
             {
-                int sw = w * scalePercent / 100;
-                int sh = h * scalePercent / 100;
-                output = new Bitmap(bmp, sw, sh);
-                needsDispose = true;
+                g.CopyFromScreen(x, y, 0, 0, new Size(w, h));
             }
 
-            using var ms = new MemoryStream();
-            var encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
-                .First(e => e.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
-            var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
-            encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
-                System.Drawing.Imaging.Encoder.Quality, (long)Math.Clamp(quality, 1, 100));
-            output.Save(ms, encoder, encoderParams);
+            return CompressImage(bmp, quality, 0, format); // 0 = no resize for regions
+        });
+    }
 
-            if (needsDispose) output.Dispose();
+    /// <summary>
+    /// Compress a bitmap to the requested format with optional downscaling.
+    /// Supports jpeg and png (WebP requires external codec on Windows).
+    /// </summary>
+    private static byte[] CompressImage(Bitmap bmp, int quality, int maxWidth, string format)
+    {
+        Bitmap output = bmp;
+        bool needsDispose = false;
+
+        // Downscale if maxWidth is set and image is wider
+        if (maxWidth > 0 && bmp.Width > maxWidth)
+        {
+            float scale = (float)maxWidth / bmp.Width;
+            int newH = (int)(bmp.Height * scale);
+            output = new Bitmap(bmp, maxWidth, newH);
+            needsDispose = true;
+        }
+
+        try
+        {
+            using var ms = new MemoryStream();
+
+            if (format == "png")
+            {
+                output.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            }
+            else // jpeg (default, best compression-to-quality for AI vision)
+            {
+                var encoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
+                    .First(e => e.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
+                var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
+                encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                    System.Drawing.Imaging.Encoder.Quality, (long)Math.Clamp(quality, 1, 100));
+                output.Save(ms, encoder, encoderParams);
+            }
 
             return ms.ToArray();
-        });
+        }
+        finally
+        {
+            if (needsDispose) output.Dispose();
+        }
     }
 }
