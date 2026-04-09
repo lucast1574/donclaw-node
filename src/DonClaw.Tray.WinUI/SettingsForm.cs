@@ -25,6 +25,7 @@ public class SettingsForm : Form
     private Panel _statusDot = null!;
     private Button _connectBtn = null!;
     private Button _testBtn = null!;
+    private Label _machineLabel = null!;
 
     #region Win32 — Taskbar position detection
     [DllImport("user32.dll")]
@@ -246,11 +247,23 @@ public class SettingsForm : Form
         };
         Controls.Add(tokenHint);
 
+        // --- Machine info (shown when connected) ---
+        _machineLabel = new Label
+        {
+            Text = "",
+            ForeColor = Color.FromArgb(50, 205, 50),
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(20, 252),
+            AutoSize = true,
+            Visible = false
+        };
+        Controls.Add(_machineLabel);
+
         // --- Buttons ---
         _connectBtn = new Button
         {
             Text = "🔗 Connect",
-            Location = new Point(20, 272),
+            Location = new Point(20, 280),
             Size = new Size(165, 38),
             BackColor = Color.FromArgb(55, 120, 250),
             ForeColor = Color.White,
@@ -265,7 +278,7 @@ public class SettingsForm : Form
         _testBtn = new Button
         {
             Text = "🔌 Test",
-            Location = new Point(195, 272),
+            Location = new Point(195, 280),
             Size = new Size(165, 38),
             BackColor = Color.FromArgb(50, 50, 58),
             ForeColor = Color.White,
@@ -281,7 +294,7 @@ public class SettingsForm : Form
         // --- Separator line ---
         var separator = new Panel
         {
-            Location = new Point(20, 326),
+            Location = new Point(20, 334),
             Size = new Size(340, 1),
             BackColor = Color.FromArgb(50, 50, 58)
         };
@@ -295,7 +308,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(20, 338),
+            Location = new Point(20, 346),
             AutoSize = true
         };
         reconnectLink.LinkClicked += (_, _) =>
@@ -315,7 +328,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(130, 338),
+            Location = new Point(130, 346),
             AutoSize = true
         };
         logsLink.LinkClicked += (_, _) =>
@@ -331,7 +344,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(255, 100, 100),
-            Location = new Point(210, 338),
+            Location = new Point(210, 346),
             AutoSize = true
         };
         exitLink.LinkClicked += (_, _) =>
@@ -442,6 +455,24 @@ public class SettingsForm : Form
         {
             var dl = Controls["deviceLabel"] as Label;
             if (dl != null) dl.Text = $"Device: {_nodeService.ShortDeviceId}...";
+        }
+
+        // Show machine name when connected
+        if (status == ConnectionStatus.Connected)
+        {
+            _machineLabel.Text = $"💻 Connected to {Environment.MachineName}";
+            _machineLabel.ForeColor = Color.FromArgb(50, 205, 50);
+            _machineLabel.Visible = true;
+        }
+        else if (status == ConnectionStatus.Connecting)
+        {
+            _machineLabel.Text = $"💻 Connecting {Environment.MachineName}...";
+            _machineLabel.ForeColor = Color.FromArgb(255, 200, 50);
+            _machineLabel.Visible = true;
+        }
+        else
+        {
+            _machineLabel.Visible = false;
         }
     }
 
