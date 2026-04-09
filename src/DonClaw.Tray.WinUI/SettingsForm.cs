@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using DonClaw.Shared;
@@ -248,7 +249,7 @@ public class SettingsForm : Form
         // --- Buttons ---
         _connectBtn = new Button
         {
-            Text = "💾 Save & Connect",
+            Text = "🔗 Connect",
             Location = new Point(20, 272),
             Size = new Size(165, 38),
             BackColor = Color.FromArgb(55, 120, 250),
@@ -444,6 +445,21 @@ public class SettingsForm : Form
         }
     }
 
+    /// <summary>
+    /// Delete the old device key so the node registers as a new device
+    /// on the target gateway. This is needed when switching between gateways.
+    /// </summary>
+    private static void ResetDeviceIdentity()
+    {
+        try
+        {
+            var keyPath = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json");
+            if (File.Exists(keyPath))
+                File.Delete(keyPath);
+        }
+        catch { }
+    }
+
     private async void OnConnectClick(object? sender, EventArgs e)
     {
         var host = _hostInput.Text.Trim();
@@ -455,6 +471,10 @@ public class SettingsForm : Form
             _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
             return;
         }
+
+        // If host or token changed, reset device identity for clean pairing
+        if (host != _settings.GatewayHost || token != _settings.Token)
+            ResetDeviceIdentity();
 
         _settings.GatewayHost = host;
         _settings.Token = token;
@@ -476,7 +496,7 @@ public class SettingsForm : Form
         finally
         {
             _connectBtn.Enabled = true;
-            _connectBtn.Text = "💾 Save & Connect";
+            _connectBtn.Text = "🔗 Connect";
         }
     }
 
@@ -513,7 +533,7 @@ public class SettingsForm : Form
             await client.ConnectAsync(new Uri(testHost), cts.Token);
             await client.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", cts.Token);
 
-            _statusLabel.Text = "✅ Connection successful!";
+            _statusLabel.Text = "✅ Reachable! Click Connect to pair.";
             _statusLabel.ForeColor = Color.FromArgb(50, 205, 50);
             _statusDot.BackColor = Color.FromArgb(50, 205, 50);
         }
