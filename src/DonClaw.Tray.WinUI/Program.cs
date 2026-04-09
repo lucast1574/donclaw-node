@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "6.0.0";
+    public const string Version = "7.0.0";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -98,6 +98,8 @@ static class Program
         _localApi.RegionScreenshotProvider = TakeRegionScreenshot;
         _localApi.Cache = _screenshotCache;
         _localApi.Finder = _textFinder;
+        _localApi.Sequence = new SequenceEngine(
+            _nodeService.GetCapabilities(), _textFinder, _screenshotCache, new AppLogger());
         _localApi.Start();
 
         // Auto-connect if configured

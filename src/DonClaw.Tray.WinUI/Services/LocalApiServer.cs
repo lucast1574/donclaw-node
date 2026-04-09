@@ -59,6 +59,9 @@ public class LocalApiServer : IDisposable
     /// <summary>Text finder for local OCR.</summary>
     public TextFinder? Finder { get; set; }
 
+    /// <summary>Sequence engine for chained actions.</summary>
+    public SequenceEngine? Sequence { get; set; }
+
     public int Port => _port;
 
     public LocalApiServer(int port, IReadOnlyList<INodeCapability> capabilities, IOpenClawLogger logger)
@@ -267,6 +270,11 @@ public class LocalApiServer : IDisposable
 
             case "/cached":
                 await HandleCachedScreenshot(stream);
+                break;
+
+            case "/sequence":
+                if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
+                await HandleSequence(stream, body);
                 break;
 
             default:
@@ -524,6 +532,46 @@ public class LocalApiServer : IDisposable
             screenHeight = dump.ScreenHeight,
             lines = dump.Lines.Select(l => new { text = l.Text, words = l.Words.Select(w => new { w.Text, w.X, w.Y }) })
         });
+    }
+
+    /// <summary>
+    /// Sequence: execute multiple actions in one shot.
+    /// POST /sequence {"steps": [{"action": "open", "url": "..."}, ...]}
+    /// The node executes everything locally — no AI round-trips between steps.
+    /// </summary>
+    private async Task HandleSequence(NetworkStream stream, string body)
+    {
+        if (Sequence == null)
+        {
+            await SendError(stream, 503, "Sequence engine not available");
+            return;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("steps", out var steps) ||
+                steps.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                await SendError(stream, 400, "Missing 'steps' array");
+                return;
+            }
+
+            var result = await Sequence.ExecuteAsync(steps);
+            await SendJson(stream, new
+            {
+                ok = result.Ok,
+                totalMs = result.TotalMs,
+                stepsCompleted = result.Steps.Count,
+                steps = result.Steps
+            });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            await SendError(stream, 400, "Invalid JSON");
+        }
     }
 
     /// <summary>Return the cached screenshot instantly (no capture delay).</summary>
