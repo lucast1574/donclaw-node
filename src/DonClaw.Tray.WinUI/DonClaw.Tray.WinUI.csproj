@@ -5,7 +5,7 @@
     <RootNamespace>DonClaw.Tray</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-
+    <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>DonClawNode</AssemblyName>
     <Version>1.0.0</Version>
     <Product>DonClaw Node</Product>

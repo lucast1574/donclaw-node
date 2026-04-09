@@ -1,102 +1,20 @@
 using System;
-using System.Diagnostics;
+using System.Drawing;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using DonClaw.Shared;
 using DonClaw.Tray.Services;
 
 namespace DonClaw.Tray;
 
-/// <summary>
-/// DonClaw Node — headless tray app. No WinUI XAML needed.
-/// Uses Win32 Shell_NotifyIcon for the system tray icon and a simple WinForms-style message loop.
-/// </summary>
 static class Program
 {
-    // Win32 tray icon interop
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpData);
-
-    [DllImport("user32.dll")]
-    private static extern bool PostQuitMessage(int nExitCode);
-
-    [DllImport("user32.dll")]
-    private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
-
-    [DllImport("user32.dll")]
-    private static extern bool TranslateMessage(ref MSG lpMsg);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr CreateWindowEx(uint exStyle, string className, string windowName,
-        uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern ushort RegisterClass(ref WNDCLASS lpWndClass);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetModuleHandle(string? lpModuleName);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr LoadImage(IntPtr hInstance, string name, uint type, int cx, int cy, uint flags);
-
-    private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct NOTIFYICONDATA
-    {
-        public uint cbSize;
-        public IntPtr hWnd;
-        public uint uID;
-        public uint uFlags;
-        public uint uCallbackMessage;
-        public IntPtr hIcon;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string szTip;
-        public uint dwState;
-        public uint dwStateMask;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-        public string szInfo;
-        public uint uVersion;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
-        public string szInfoTitle;
-        public uint dwInfoFlags;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int pt_x, pt_y; }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WNDCLASS
-    {
-        public uint style; public IntPtr lpfnWndProc; public int cbClsExtra, cbWndExtra;
-        public IntPtr hInstance, hIcon, hCursor, hbrBackground; public string lpszMenuName, lpszClassName;
-    }
-
-    private const uint NIM_ADD = 0, NIM_MODIFY = 1, NIM_DELETE = 2;
-    private const uint NIF_MESSAGE = 1, NIF_ICON = 2, NIF_TIP = 4, NIF_INFO = 0x10;
-    private const uint WM_APP = 0x8000;
-    private const uint WM_TRAY = WM_APP + 1;
-    private const uint WM_LBUTTONDBLCLK = 0x0203;
-    private const uint WM_RBUTTONUP = 0x0205;
-    private const uint IMAGE_ICON = 1;
-    private const uint LR_LOADFROMFILE = 0x0010;
-
-    private static IntPtr _hWnd;
-    private static NOTIFYICONDATA _nid;
+    private static NotifyIcon? _trayIcon;
     private static NodeService? _nodeService;
     private static SettingsManager? _settings;
-    private static WndProcDelegate? _wndProcDelegate; // prevent GC
+    private static SettingsForm? _settingsForm;
 
     [STAThread]
     static void Main()
@@ -107,47 +25,53 @@ static class Program
 
         Logger.Info("=== DonClaw Node starting ===");
 
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+
         _settings = new SettingsManager();
 
         // Register auto-start
         if (_settings.AutoStart)
             AutoStartManager.Set(true);
 
-        // Create hidden window for message pump
-        var hInstance = GetModuleHandle(null);
-        _wndProcDelegate = WndProc;
-        var wc = new WNDCLASS
-        {
-            lpszClassName = "DonClawTrayClass",
-            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate),
-            hInstance = hInstance
-        };
-        RegisterClass(ref wc);
-        _hWnd = CreateWindowEx(0, "DonClawTrayClass", "DonClawNode", 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
-
-        // Create tray icon
-        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "donclaw.ico");
-        var hIcon = File.Exists(iconPath)
-            ? LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-            : IntPtr.Zero;
-
-        _nid = new NOTIFYICONDATA
-        {
-            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
-            hWnd = _hWnd,
-            uID = 1,
-            uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
-            uCallbackMessage = WM_TRAY,
-            hIcon = hIcon,
-            szTip = "DonClaw Node — Starting..."
-        };
-        Shell_NotifyIcon(NIM_ADD, ref _nid);
-
-        // Start node service
+        // Create node service
         _nodeService = new NodeService(new AppLogger());
         _nodeService.StatusChanged += OnStatusChanged;
         _nodeService.NotifyRequested += OnNotify;
 
+        // Create tray icon
+        _trayIcon = new NotifyIcon
+        {
+            Text = "DonClaw Node",
+            Icon = CreateStatusIcon(Color.Gray),
+            Visible = true
+        };
+
+        // Context menu
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("⚙️ Settings", null, (_, _) => ShowSettings());
+        menu.Items.Add("🔄 Reconnect", null, (_, _) => Reconnect());
+        menu.Items.Add("📄 View Logs", null, (_, _) =>
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { }
+        });
+        menu.Items.Add("-");
+        menu.Items.Add("❌ Exit", null, (_, _) =>
+        {
+            _nodeService?.Dispose();
+            _trayIcon!.Visible = false;
+            Application.Exit();
+        });
+
+        _trayIcon.ContextMenuStrip = menu;
+        _trayIcon.Click += (_, e) =>
+        {
+            if (e is MouseEventArgs me && me.Button == MouseButtons.Left)
+                ShowSettings();
+        };
+
+        // Auto-connect if configured
         if (_settings.IsConfigured)
         {
             _ = Task.Run(async () =>
@@ -158,94 +82,85 @@ static class Program
         }
         else
         {
-            ShowBalloon("DonClaw Node", "Not configured. Edit settings.json in %APPDATA%\\DonClawNode");
-            Logger.Info("Not configured — user needs to edit settings.json");
+            _trayIcon.ShowBalloonTip(3000, "DonClaw Node", "Click to configure your connection.", ToolTipIcon.Info);
+            ShowSettings();
         }
 
-        // Message loop
-        while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
-        {
-            TranslateMessage(ref msg);
-            DispatchMessage(ref msg);
-        }
+        Application.Run();
 
         // Cleanup
-        Shell_NotifyIcon(NIM_DELETE, ref _nid);
+        _trayIcon.Dispose();
         _nodeService?.Dispose();
         Logger.Info("=== DonClaw Node stopped ===");
     }
 
-    private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+    private static void ShowSettings()
     {
-        if (msg == WM_TRAY)
+        if (_settingsForm == null || _settingsForm.IsDisposed)
         {
-            var mouseMsg = (uint)(lParam.ToInt64() & 0xFFFF);
-            if (mouseMsg == WM_LBUTTONDBLCLK)
-            {
-                // Open settings file
-                var settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DonClawNode", "settings.json");
-                try { Process.Start(new ProcessStartInfo(settingsPath) { UseShellExecute = true }); } catch { }
-            }
-            else if (mouseMsg == WM_RBUTTONUP)
-            {
-                // Open log file
-                try { Process.Start(new ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { }
-            }
+            _settingsForm = new SettingsForm(_settings!, _nodeService!);
         }
-        return DefWindowProc(hWnd, msg, wParam, lParam);
+        _settingsForm.Show();
+        _settingsForm.BringToFront();
+        _settingsForm.Activate();
+    }
+
+    private static async void Reconnect()
+    {
+        if (_settings == null || _nodeService == null) return;
+        if (!_settings.IsConfigured)
+        {
+            ShowSettings();
+            return;
+        }
+        _nodeService.Disconnect();
+        try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token); }
+        catch (Exception ex) { Logger.Error($"Reconnect failed: {ex.Message}"); }
     }
 
     private static void OnStatusChanged(object? sender, ConnectionStatus status)
     {
-        var tip = status switch
+        if (_trayIcon == null) return;
+
+        var (color, text) = status switch
         {
-            ConnectionStatus.Connected => "DonClaw Node — Connected ✓",
-            ConnectionStatus.Connecting => "DonClaw Node — Connecting...",
-            ConnectionStatus.Error => "DonClaw Node — Error",
-            _ => "DonClaw Node — Disconnected"
+            ConnectionStatus.Connected => (Color.FromArgb(50, 205, 50), "DonClaw Node — Connected ✓"),
+            ConnectionStatus.Connecting => (Color.FromArgb(255, 200, 50), "DonClaw Node — Connecting..."),
+            ConnectionStatus.Error => (Color.FromArgb(240, 60, 60), "DonClaw Node — Error"),
+            _ => (Color.Gray, "DonClaw Node — Disconnected")
         };
 
-        _nid.szTip = tip;
-        _nid.uFlags = NIF_TIP;
-
-        // Try to load status-specific icon
-        var iconName = status switch
-        {
-            ConnectionStatus.Connected => "donclaw-connected.ico",
-            ConnectionStatus.Connecting => "donclaw-connecting.ico",
-            _ => "donclaw-disconnected.ico"
-        };
-        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", iconName);
-        if (!File.Exists(iconPath))
-            iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "donclaw.ico");
-
-        if (File.Exists(iconPath))
-        {
-            var hIcon = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
-            if (hIcon != IntPtr.Zero)
-            {
-                _nid.hIcon = hIcon;
-                _nid.uFlags |= NIF_ICON;
-            }
-        }
-
-        Shell_NotifyIcon(NIM_MODIFY, ref _nid);
+        _trayIcon.Icon = CreateStatusIcon(color);
+        _trayIcon.Text = text;
 
         if (status == ConnectionStatus.Connected)
-            ShowBalloon("DonClaw Node", "Connected and ready. Your PC is now controllable.");
+            _trayIcon.ShowBalloonTip(2000, "DonClaw Node", "Connected and ready!", ToolTipIcon.Info);
     }
 
     private static void OnNotify(object? sender, DonClaw.Shared.Capabilities.SystemNotifyArgs args)
     {
-        ShowBalloon(args.Title, args.Body);
+        _trayIcon?.ShowBalloonTip(3000, args.Title, args.Body, ToolTipIcon.Info);
     }
 
-    private static void ShowBalloon(string title, string text)
+    /// <summary>
+    /// Create a simple colored circle icon for the tray. 
+    /// Green = connected, yellow = connecting, red = error, gray = disconnected.
+    /// </summary>
+    private static Icon CreateStatusIcon(Color color)
     {
-        _nid.uFlags = NIF_INFO;
-        _nid.szInfoTitle = title.Length > 63 ? title[..63] : title;
-        _nid.szInfo = text.Length > 255 ? text[..255] : text;
-        _nid.dwInfoFlags = 1; // NIIF_INFO
-        Shell_NotifyIcon(NIM_MODIFY, ref _nid);
+        using var bmp = new Bitmap(16, 16);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+
+        // Dark circle background
+        using var bgBrush = new SolidBrush(Color.FromArgb(30, 30, 36));
+        g.FillEllipse(bgBrush, 0, 0, 15, 15);
+
+        // Status color inner circle
+        using var brush = new SolidBrush(color);
+        g.FillEllipse(brush, 3, 3, 9, 9);
+
+        return Icon.FromHandle(bmp.GetHicon());
     }
 }
