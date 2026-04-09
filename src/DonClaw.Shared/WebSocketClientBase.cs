@@ -16,7 +16,11 @@ public abstract class WebSocketClientBase : IDisposable
     private bool _disposed;
     private int _reconnectAttempts;
     private int _reconnectLoopActive;
+    private DateTime _firstConnectAttempt;
     private static readonly int[] BackoffMs = { 1000, 2000, 4000, 8000, 15000, 30000, 60000 };
+
+    /// <summary>Max time to keep retrying before giving up. Default 60s.</summary>
+    public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
     protected readonly string _token;
     protected readonly IOpenClawLogger _logger;
@@ -64,6 +68,8 @@ public abstract class WebSocketClientBase : IDisposable
         try
         {
             RaiseStatusChanged(ConnectionStatus.Connecting);
+            if (_reconnectAttempts == 0)
+                _firstConnectAttempt = DateTime.UtcNow;
             _logger.Info($"Connecting to {ClientRole}: {GatewayUrlForDisplay}");
 
             _webSocket = new ClientWebSocket();
@@ -182,9 +188,18 @@ public abstract class WebSocketClientBase : IDisposable
         {
             while (!_disposed && !_cts.Token.IsCancellationRequested && ShouldAutoReconnect())
             {
+                // Check timeout
+                if (DateTime.UtcNow - _firstConnectAttempt > ConnectionTimeout)
+                {
+                    _logger.Warn($"{ClientRole} connection timeout after {ConnectionTimeout.TotalSeconds}s — giving up");
+                    RaiseStatusChanged(ConnectionStatus.Error);
+                    break;
+                }
+
                 var delay = BackoffMs[Math.Min(_reconnectAttempts, BackoffMs.Length - 1)];
                 _reconnectAttempts++;
-                _logger.Warn($"{ClientRole} reconnecting in {delay}ms (attempt {_reconnectAttempts})");
+                var elapsed = (int)(DateTime.UtcNow - _firstConnectAttempt).TotalSeconds;
+                _logger.Warn($"{ClientRole} reconnecting in {delay}ms (attempt {_reconnectAttempts}, {elapsed}s elapsed)");
                 RaiseStatusChanged(ConnectionStatus.Connecting);
 
                 await Task.Delay(delay, _cts.Token);
