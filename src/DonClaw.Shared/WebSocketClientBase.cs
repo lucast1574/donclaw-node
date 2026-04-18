@@ -20,7 +20,7 @@ public abstract class WebSocketClientBase : IDisposable
     private static readonly int[] BackoffMs = { 1000, 2000, 4000, 8000, 15000, 30000, 60000 };
 
     /// <summary>Max time to keep retrying before giving up. Default 60s.</summary>
-    public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(60);
+    public TimeSpan ConnectionTimeout { get; set; } = TimeSpan.FromSeconds(120);
 
     protected readonly string _token;
     protected readonly IOpenClawLogger _logger;
@@ -80,7 +80,14 @@ public abstract class WebSocketClientBase : IDisposable
             var origin = $"{originScheme}://{uri.Host}:{uri.Port}";
             _webSocket.Options.SetRequestHeader("Origin", origin);
 
-            if (!string.IsNullOrEmpty(_credentials))
+            // Auth: send token as password via Basic auth (empty username)
+            // The OpenClaw gateway expects Basic auth with password for WebSocket upgrade
+            if (!string.IsNullOrEmpty(_token))
+            {
+                var basicAuth = Convert.ToBase64String(Encoding.UTF8.GetBytes($":{_token}"));
+                _webSocket.Options.SetRequestHeader("Authorization", $"Basic {basicAuth}");
+            }
+            else if (!string.IsNullOrEmpty(_credentials))
             {
                 var credentialsToEncode = GatewayUrlHelper.DecodeCredentials(_credentials);
                 _webSocket.Options.SetRequestHeader(

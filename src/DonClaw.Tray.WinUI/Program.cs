@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "7.1.0";
+    public const string Version = "8.3.1";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -42,9 +42,12 @@ static class Program
 
         _settings = new SettingsManager();
 
-        // Register auto-start
+        // Register auto-start (enabled by default on first run)
         if (_settings.AutoStart)
             AutoStartManager.Set(true);
+
+        // Create Start Menu shortcut so users can find and pin the app
+        CreateStartMenuShortcut();
 
         // Try to load the logo image for the tray icon
         _logoImage = LoadLogoImage();
@@ -53,6 +56,15 @@ static class Program
         _nodeService = new NodeService(new AppLogger());
         _nodeService.StatusChanged += OnStatusChanged;
         _nodeService.NotifyRequested += OnNotify;
+        // Once the gateway issues a permanent device token, drop the one-shot bootstrap token from settings.
+        _nodeService.BootstrapConsumed += (_, _) =>
+        {
+            if (_settings != null && !string.IsNullOrEmpty(_settings.BootstrapToken))
+            {
+                Logger.Info("Bootstrap token consumed — clearing from settings");
+                _settings.ClearBootstrapToken();
+            }
+        };
 
         // Create tray icon
         _trayIcon = new NotifyIcon
@@ -103,9 +115,10 @@ static class Program
         // Auto-connect if configured
         if (_settings.IsConfigured)
         {
+            var bootstrap = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? null : _settings.BootstrapToken;
             _ = Task.Run(async () =>
             {
-                try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token); }
+                try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, bootstrap); }
                 catch (Exception ex) { Logger.Error($"Connect failed: {ex.Message}"); }
             });
         }
@@ -144,7 +157,8 @@ static class Program
             return;
         }
         _nodeService.Disconnect();
-        try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token); }
+        var bootstrap = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? null : _settings.BootstrapToken;
+        try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, bootstrap); }
         catch (Exception ex) { Logger.Error($"Reconnect failed: {ex.Message}"); }
     }
 
@@ -275,5 +289,33 @@ static class Program
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    /// <summary>
+    /// Create a Start Menu shortcut so users can search "DonClaw" and pin it.
+    /// Uses a .url file (no COM dependency on IWshShortcut).
+    /// </summary>
+    private static void CreateStartMenuShortcut()
+    {
+        try
+        {
+            var startMenuPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                "Programs");
+            var shortcutPath = Path.Combine(startMenuPath, "DonClaw Node.url");
+            var exePath = Environment.ProcessPath;
+
+            if (string.IsNullOrEmpty(exePath) || File.Exists(shortcutPath))
+                return;
+
+            File.WriteAllText(shortcutPath,
+                $"[InternetShortcut]\nURL=file:///{exePath.Replace('\\', '/')}\nIconIndex=0\nIconFile={exePath.Replace('\\', '/')}\n");
+
+            Logger.Info($"Start Menu shortcut created: {shortcutPath}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Failed to create Start Menu shortcut: {ex.Message}");
+        }
+    }
 
 }

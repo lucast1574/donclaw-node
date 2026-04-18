@@ -49,11 +49,21 @@ public class DonClawNodeClient : WebSocketClientBase
     // ClientId must be "node-host" — required by the OpenClaw gateway protocol
     private const string ClientId = "node-host";
 
-    public DonClawNodeClient(string gatewayUrl, string token, string dataPath, IOpenClawLogger? logger = null)
+    /// <summary>
+    /// One-shot bootstrap token (from "openclaw qr") used to auto-approve
+    /// pairing on the very first connect. Null/empty for regular reconnects.
+    /// </summary>
+    private readonly string? _bootstrapToken;
+
+    /// <summary>Fires when the gateway issues a permanent device token and the bootstrap token is no longer needed.</summary>
+    public event EventHandler? BootstrapConsumed;
+
+    public DonClawNodeClient(string gatewayUrl, string token, string dataPath, IOpenClawLogger? logger = null, string? bootstrapToken = null)
         : base(gatewayUrl, token, logger)
     {
         _deviceIdentity = new DeviceIdentity(dataPath, _logger);
         _deviceIdentity.Initialize();
+        _bootstrapToken = string.IsNullOrWhiteSpace(bootstrapToken) ? null : bootstrapToken;
 
         _registration = new NodeRegistration
         {
@@ -297,6 +307,8 @@ public class DonClawNodeClient : WebSocketClientBase
 
         var authToken = _deviceIdentity.DeviceToken ?? _token;
         var isPaired = !string.IsNullOrEmpty(_deviceIdentity.DeviceToken);
+        // Only send the bootstrap token on the very first connect (before pairing).
+        var useBootstrap = !isPaired && !string.IsNullOrEmpty(_bootstrapToken);
 
         if (!string.IsNullOrEmpty(nonce))
         {
@@ -319,7 +331,11 @@ public class DonClawNodeClient : WebSocketClientBase
             }
         }
 
-        _logger.Info($"Connecting with Ed25519 device identity (paired: {isPaired})");
+        _logger.Info($"Connecting with Ed25519 device identity (paired: {isPaired}, bootstrap: {useBootstrap})");
+
+        object authPayload = useBootstrap
+            ? new { token = authToken, bootstrapToken = _bootstrapToken }
+            : new { token = authToken };
 
         var msg = new
         {
@@ -343,7 +359,7 @@ public class DonClawNodeClient : WebSocketClientBase
                 caps = _registration.Capabilities,
                 commands = _registration.Commands,
                 permissions = _registration.Permissions,
-                auth = new { token = authToken },
+                auth = authPayload,
                 locale = "en-US",
                 userAgent = $"donclaw-node/{_registration.Version}",
                 device = new
@@ -393,6 +409,8 @@ public class DonClawNodeClient : WebSocketClientBase
                     _isPendingApproval = false;
                     _logger.Info("Received device token - we are now paired!");
                     _deviceIdentity.StoreDeviceToken(deviceToken);
+                    // Bootstrap token (if any) has been consumed by the gateway.
+                    BootstrapConsumed?.Invoke(this, EventArgs.Empty);
                     PairingStatusChanged?.Invoke(this, new PairingStatusEventArgs(
                         PairingStatus.Paired,
                         _deviceIdentity.DeviceId,

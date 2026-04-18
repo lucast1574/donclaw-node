@@ -24,7 +24,9 @@ public class SettingsForm : Form
     private Label _statusLabel = null!;
     private Panel _statusDot = null!;
     private Button _connectBtn = null!;
+    private Button _disconnectBtn = null!;
     private Button _testBtn = null!;
+    private CheckBox _autoStartCheck = null!;
     private Label _machineLabel = null!;
 
     #region Win32 — Taskbar position detection
@@ -85,7 +87,7 @@ public class SettingsForm : Form
     {
         // --- Borderless popup window ---
         Text = "DonClaw Node";
-        Size = new Size(380, 440);
+        Size = new Size(380, 450);
         FormBorderStyle = FormBorderStyle.None;  // No borders, no title bar
         ShowInTaskbar = false;                    // Don't show in taskbar
         TopMost = true;                           // Always on top
@@ -206,7 +208,7 @@ public class SettingsForm : Form
 
         var hostHint = new Label
         {
-            Text = "e.g. ws://your-instance.donclaw.com:18789",
+            Text = "ws://local-ip:18789 or wss://your.tailscale.ts.net",
             ForeColor = Color.FromArgb(80, 80, 90),
             Font = new Font("Segoe UI", 7.5f),
             Location = new Point(20, 155),
@@ -239,7 +241,7 @@ public class SettingsForm : Form
 
         var tokenHint = new Label
         {
-            Text = "Found in your DonClaw dashboard → Instance Settings",
+            Text = "Ask your DonClaw admin for host + token",
             ForeColor = Color.FromArgb(80, 80, 90),
             Font = new Font("Segoe UI", 7.5f),
             Location = new Point(20, 232),
@@ -264,7 +266,7 @@ public class SettingsForm : Form
         {
             Text = "🔗 Connect",
             Location = new Point(20, 280),
-            Size = new Size(165, 38),
+            Size = new Size(108, 38),
             BackColor = Color.FromArgb(55, 120, 250),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
@@ -275,11 +277,27 @@ public class SettingsForm : Form
         _connectBtn.Click += OnConnectClick;
         Controls.Add(_connectBtn);
 
+        _disconnectBtn = new Button
+        {
+            Text = "⛔ Stop",
+            Location = new Point(136, 280),
+            Size = new Size(108, 38),
+            BackColor = Color.FromArgb(180, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            Cursor = Cursors.Hand,
+            Enabled = false
+        };
+        _disconnectBtn.FlatAppearance.BorderSize = 0;
+        _disconnectBtn.Click += (_, _) => { _nodeService.Disconnect(); };
+        Controls.Add(_disconnectBtn);
+
         _testBtn = new Button
         {
             Text = "🔌 Test",
-            Location = new Point(195, 280),
-            Size = new Size(165, 38),
+            Location = new Point(252, 280),
+            Size = new Size(108, 38),
             BackColor = Color.FromArgb(50, 50, 58),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
@@ -291,10 +309,27 @@ public class SettingsForm : Form
         _testBtn.Click += OnTestClick;
         Controls.Add(_testBtn);
 
+        // --- Auto-start checkbox ---
+        _autoStartCheck = new CheckBox
+        {
+            Text = "Start with Windows",
+            ForeColor = Color.FromArgb(160, 160, 170),
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(20, 326),
+            AutoSize = true,
+            Checked = AutoStartManager.IsEnabled()
+        };
+        _autoStartCheck.CheckedChanged += (_, _) => {
+            AutoStartManager.Set(_autoStartCheck.Checked);
+            _settings.AutoStart = _autoStartCheck.Checked;
+            _settings.Save();
+        };
+        Controls.Add(_autoStartCheck);
+
         // --- Separator line ---
         var separator = new Panel
         {
-            Location = new Point(20, 334),
+            Location = new Point(20, 352),
             Size = new Size(340, 1),
             BackColor = Color.FromArgb(50, 50, 58)
         };
@@ -308,7 +343,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(20, 346),
+            Location = new Point(20, 364),
             AutoSize = true
         };
         reconnectLink.LinkClicked += (_, _) =>
@@ -316,7 +351,8 @@ public class SettingsForm : Form
             if (_settings.IsConfigured)
             {
                 _nodeService.Disconnect();
-                _ = _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token);
+                var boot = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? null : _settings.BootstrapToken;
+                _ = _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, boot);
             }
         };
         Controls.Add(reconnectLink);
@@ -328,7 +364,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(130, 346),
+            Location = new Point(130, 364),
             AutoSize = true
         };
         logsLink.LinkClicked += (_, _) =>
@@ -344,7 +380,7 @@ public class SettingsForm : Form
             ForeColor = Color.FromArgb(140, 140, 150),
             LinkColor = Color.FromArgb(140, 140, 150),
             ActiveLinkColor = Color.FromArgb(255, 100, 100),
-            Location = new Point(210, 346),
+            Location = new Point(210, 364),
             AutoSize = true
         };
         exitLink.LinkClicked += (_, _) =>
@@ -360,7 +396,7 @@ public class SettingsForm : Form
             Text = "",
             ForeColor = Color.FromArgb(60, 60, 70),
             Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 370),
+            Location = new Point(20, 390),
             AutoSize = true,
             Name = "deviceLabel"
         };
@@ -372,7 +408,7 @@ public class SettingsForm : Form
             Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}",
             ForeColor = Color.FromArgb(50, 50, 60),
             Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 400),
+            Location = new Point(20, 420),
             Size = new Size(340, 20),
             TextAlign = ContentAlignment.MiddleCenter
         };
@@ -436,6 +472,135 @@ public class SettingsForm : Form
         _tokenInput.Text = _settings.Token;
     }
 
+    /// <summary>
+    /// Legacy dialog entry point — retained in case we want to re-expose a setup-code UI later.
+    /// Not wired to any control in v8.3.1+.
+    /// </summary>
+    private void PromptForSetupCode()
+    {
+        using var dlg = new Form
+        {
+            Text = "Paste Setup Code",
+            Size = new Size(440, 260),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            BackColor = Color.FromArgb(24, 24, 28),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9.5f),
+            ShowInTaskbar = false,
+            TopMost = true
+        };
+
+        var info = new Label
+        {
+            Text = "Paste the setup code from your DonClaw admin.\r\nIt fills Host + bootstrap token automatically.",
+            ForeColor = Color.FromArgb(170, 170, 180),
+            Font = new Font("Segoe UI", 9f),
+            Location = new Point(14, 12),
+            Size = new Size(400, 36)
+        };
+        dlg.Controls.Add(info);
+
+        var codeBox = new TextBox
+        {
+            Location = new Point(14, 54),
+            Size = new Size(400, 100),
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            BackColor = Color.FromArgb(40, 40, 46),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Consolas", 9f)
+        };
+        dlg.Controls.Add(codeBox);
+
+        var status = new Label
+        {
+            Text = "",
+            ForeColor = Color.FromArgb(240, 120, 120),
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(14, 162),
+            Size = new Size(400, 18),
+            AutoSize = false
+        };
+        dlg.Controls.Add(status);
+
+        var applyBtn = new Button
+        {
+            Text = "Apply",
+            Location = new Point(318, 190),
+            Size = new Size(96, 30),
+            BackColor = Color.FromArgb(55, 120, 250),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+        };
+        applyBtn.FlatAppearance.BorderSize = 0;
+        dlg.Controls.Add(applyBtn);
+
+        var cancelBtn = new Button
+        {
+            Text = "Cancel",
+            Location = new Point(214, 190),
+            Size = new Size(96, 30),
+            BackColor = Color.FromArgb(50, 50, 58),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9.5f),
+            DialogResult = DialogResult.Cancel
+        };
+        cancelBtn.FlatAppearance.BorderSize = 0;
+        dlg.Controls.Add(cancelBtn);
+        dlg.CancelButton = cancelBtn;
+
+        // Auto-paste from clipboard for convenience
+        try
+        {
+            if (Clipboard.ContainsText())
+            {
+                var clip = Clipboard.GetText().Trim();
+                if (clip.Length > 20 && clip.Length < 4096)
+                    codeBox.Text = clip;
+            }
+        }
+        catch { }
+
+        applyBtn.Click += (_, _) =>
+        {
+            var raw = codeBox.Text.Trim();
+            var decoded = SettingsManager.TryDecodeSetupCode(raw);
+            if (decoded == null)
+            {
+                status.Text = "❌ Invalid setup code. Ask your admin for a new one.";
+                status.ForeColor = Color.FromArgb(240, 120, 120);
+                return;
+            }
+
+            _hostInput.Text = decoded.Url ?? "";
+            _settings.GatewayHost = decoded.Url ?? "";
+            _settings.BootstrapToken = decoded.BootstrapToken ?? "";
+            // A fresh bootstrap token implies a fresh pairing: clear stored device token.
+            try
+            {
+                var keyPath = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json");
+                if (File.Exists(keyPath)) File.Delete(keyPath);
+            }
+            catch { }
+            _settings.Save();
+
+            dlg.DialogResult = DialogResult.OK;
+            dlg.Close();
+        };
+
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            _statusLabel.Text = "🎟️ Setup code applied — click Connect";
+            _statusLabel.ForeColor = Color.FromArgb(120, 180, 255);
+        }
+    }
+
     private void UpdateStatus(ConnectionStatus status)
     {
         var (color, text) = status switch
@@ -456,6 +621,9 @@ public class SettingsForm : Form
             var dl = Controls["deviceLabel"] as Label;
             if (dl != null) dl.Text = $"Device: {_nodeService.ShortDeviceId}...";
         }
+
+        // Enable/disable disconnect button
+        _disconnectBtn.Enabled = (status == ConnectionStatus.Connected || status == ConnectionStatus.Connecting);
 
         // Show machine name when connected
         if (status == ConnectionStatus.Connected)
@@ -496,9 +664,15 @@ public class SettingsForm : Form
         var host = _hostInput.Text.Trim();
         var token = _tokenInput.Text.Trim();
 
-        if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(token))
+        if (string.IsNullOrWhiteSpace(host))
         {
-            _statusLabel.Text = "❌ Host and Token are required";
+            _statusLabel.Text = "❌ Host is required";
+            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _statusLabel.Text = "❌ Token is required";
             _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
             return;
         }
@@ -511,13 +685,21 @@ public class SettingsForm : Form
         _settings.Token = token;
         _settings.Save();
 
+        // Bootstrap strategy:
+        //  - If the stored BootstrapToken is set (setup-code flow), use it.
+        //  - Otherwise, attempt to pair by also sending the Token as a bootstrap candidate.
+        //    The gateway will silently ignore it if it isn't a valid bootstrap.
+        //    Once paired, the device token replaces both and Token becomes irrelevant.
+        var bootstrap = !string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? _settings.BootstrapToken : token;
+        var hasBootstrap = !string.IsNullOrWhiteSpace(bootstrap);
+
         _connectBtn.Enabled = false;
         _connectBtn.Text = "⏳ Connecting...";
 
         try
         {
             _nodeService.Disconnect();
-            await _nodeService.ConnectAsync(host, token);
+            await _nodeService.ConnectAsync(host, token, hasBootstrap ? bootstrap : null);
         }
         catch (Exception ex)
         {
