@@ -25,6 +25,18 @@ public class SettingsManager
     public string BootstrapToken { get; set; } = "";
     public bool AutoStart { get; set; } = true;
 
+    // ── DonClaw account ──────────────────────────────────────────────────
+    /// <summary>JWT token from DonClaw backend login.</summary>
+    public string DonClawToken { get; set; } = "";
+    /// <summary>User email (for display in UI).</summary>
+    public string DonClawEmail { get; set; } = "";
+    /// <summary>User ID from DonClaw backend.</summary>
+    public string DonClawUserId { get; set; } = "";
+    /// <summary>Currently connected instance ID (from DonClaw).</summary>
+    public string ConnectedInstanceId { get; set; } = "";
+
+    public bool IsDonClawLoggedIn => !string.IsNullOrWhiteSpace(DonClawToken);
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(GatewayHost) &&
         (!string.IsNullOrWhiteSpace(Token) || !string.IsNullOrWhiteSpace(BootstrapToken));
@@ -50,6 +62,10 @@ public class SettingsManager
                     Token = data.Token ?? "";
                     BootstrapToken = data.BootstrapToken ?? "";
                     AutoStart = data.AutoStart;
+                    DonClawToken = data.DonClawToken ?? "";
+                    DonClawEmail = data.DonClawEmail ?? "";
+                    DonClawUserId = data.DonClawUserId ?? "";
+                    ConnectedInstanceId = data.ConnectedInstanceId ?? "";
                 }
             }
         }
@@ -66,7 +82,11 @@ public class SettingsManager
                     GatewayHost = GatewayHost,
                     Token = Token,
                     BootstrapToken = BootstrapToken,
-                    AutoStart = AutoStart
+                    AutoStart = AutoStart,
+                    DonClawToken = DonClawToken,
+                    DonClawEmail = DonClawEmail,
+                    DonClawUserId = DonClawUserId,
+                    ConnectedInstanceId = ConnectedInstanceId,
                 }, Opts));
         }
         catch { }
@@ -82,12 +102,27 @@ public class SettingsManager
         Save();
     }
 
+    /// <summary>Clear DonClaw session (logout).</summary>
+    public void ClearDonClawSession()
+    {
+        DonClawToken = "";
+        DonClawEmail = "";
+        DonClawUserId = "";
+        ConnectedInstanceId = "";
+        Save();
+    }
+
     private class SettingsData
     {
         public string? GatewayHost { get; set; }
         public string? Token { get; set; }
         public string? BootstrapToken { get; set; }
         public bool AutoStart { get; set; } = true;
+        // DonClaw account
+        public string? DonClawToken { get; set; }
+        public string? DonClawEmail { get; set; }
+        public string? DonClawUserId { get; set; }
+        public string? ConnectedInstanceId { get; set; }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
