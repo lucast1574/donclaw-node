@@ -21,11 +21,12 @@ namespace DonClaw.Shared;
 /// </summary>
 public class UpdateChecker
 {
-    // Public GitHub API, unauthenticated. 60 req/hour per IP is plenty for an
-    // interactive-opened-a-few-times-a-day desktop app; the class also caches
-    // one successful result in memory so the call at startup + the call when
-    // the user opens settings don't both hit the network.
-    private const string ReleasesUrl = "https://api.github.com/repos/lucast1574/donclaw-node/releases/latest";
+    // Primary: ask api.donclaw.com so we don't need the GitHub repo to be
+    // public. The backend proxies release metadata via a server-side PAT.
+    // Fallback: direct GitHub API in case the backend is down or the user
+    // isn't paired yet. If both fail we silently hide the update badge.
+    private const string PrimaryReleasesUrl = "https://api.donclaw.com/node/version";
+    private const string FallbackReleasesUrl = "https://api.github.com/repos/lucast1574/donclaw-node/releases/latest";
     private static readonly HttpClient s_http = CreateHttpClient();
 
     private static UpdateInfo? s_cached;
@@ -51,30 +52,56 @@ public class UpdateChecker
         if (s_cached != null && DateTime.UtcNow - s_cachedAt < CacheDuration)
             return IsNewer(s_cached.Tag, _currentVersion) ? s_cached : null;
 
+        var info = await TryFetchFromBackendAsync(ct) ?? await TryFetchFromGitHubAsync(ct);
+        if (info == null) return null;
+
+        s_cached = info;
+        s_cachedAt = DateTime.UtcNow;
+
+        return IsNewer(info.Tag, _currentVersion) ? info : null;
+    }
+
+    private async Task<UpdateInfo?> TryFetchFromBackendAsync(CancellationToken ct)
+    {
         try
         {
-            var release = await s_http.GetFromJsonAsync<GitHubReleaseDto>(ReleasesUrl, ct);
-            if (release?.TagName == null) return null;
-
-            var info = new UpdateInfo
+            var dto = await s_http.GetFromJsonAsync<BackendVersionDto>(PrimaryReleasesUrl, ct);
+            if (dto?.Tag == null) return null;
+            return new UpdateInfo
             {
-                Tag = StripVPrefix(release.TagName),
-                Name = release.Name ?? release.TagName,
-                HtmlUrl = release.HtmlUrl ?? "https://github.com/lucast1574/donclaw-node/releases",
-                PublishedAtIso = release.PublishedAt ?? "",
+                Tag = StripVPrefix(dto.Tag),
+                Name = dto.Name ?? dto.Tag,
+                // Keep users inside donclaw.com rather than bouncing out to
+                // the GitHub releases page: the in-app /download experience
+                // shows the button, size + version on the same screen.
+                HtmlUrl = "https://donclaw.com/download",
+                PublishedAtIso = dto.PublishedAt ?? "",
             };
-
-            s_cached = info;
-            s_cachedAt = DateTime.UtcNow;
-
-            return IsNewer(info.Tag, _currentVersion) ? info : null;
         }
         catch (Exception ex)
         {
-            // Expected failure modes: 404 (no releases yet), rate limit, offline,
-            // malformed JSON on a future change to the API. None of these should
-            // surface as errors in the tray — just pretend there's no update.
-            _logger.Debug($"[UpdateChecker] check skipped: {ex.Message}");
+            _logger.Debug($"[UpdateChecker] backend metadata unavailable: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task<UpdateInfo?> TryFetchFromGitHubAsync(CancellationToken ct)
+    {
+        try
+        {
+            var release = await s_http.GetFromJsonAsync<GitHubReleaseDto>(FallbackReleasesUrl, ct);
+            if (release?.TagName == null) return null;
+            return new UpdateInfo
+            {
+                Tag = StripVPrefix(release.TagName),
+                Name = release.Name ?? release.TagName,
+                HtmlUrl = release.HtmlUrl ?? "https://donclaw.com/download",
+                PublishedAtIso = release.PublishedAt ?? "",
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug($"[UpdateChecker] github fallback unavailable: {ex.Message}");
             return null;
         }
     }
@@ -143,5 +170,12 @@ public class UpdateChecker
         [JsonPropertyName("name")] public string? Name { get; set; }
         [JsonPropertyName("html_url")] public string? HtmlUrl { get; set; }
         [JsonPropertyName("published_at")] public string? PublishedAt { get; set; }
+    }
+
+    private class BackendVersionDto
+    {
+        [JsonPropertyName("tag")] public string? Tag { get; set; }
+        [JsonPropertyName("name")] public string? Name { get; set; }
+        [JsonPropertyName("publishedAt")] public string? PublishedAt { get; set; }
     }
 }
