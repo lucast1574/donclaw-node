@@ -573,7 +573,7 @@ public class SettingsForm : Form
     private void StartPlanCheckTimer()
     {
         _planCheckTimer?.Stop();
-        _planCheckTimer = new System.Windows.Forms.Timer { Interval = 30 * 60 * 1000 }; // 30 min
+        _planCheckTimer = new System.Windows.Forms.Timer { Interval = 24 * 60 * 60 * 1000 }; // 24h
         _planCheckTimer.Tick += async (_, _) => await CheckPlanStillActive();
         _planCheckTimer.Start();
     }
