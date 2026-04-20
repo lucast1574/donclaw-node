@@ -27,7 +27,7 @@ public class SettingsForm : Form
     private Panel _statusDot = null!;
     private Label _machineLabel = null!;
     private CheckBox _autoStartCheck = null!;
-    private Button _modeToggleBtn = null!;
+    private LinkLabel _modeToggleBtn = null!;
 
     // DonClaw mode controls
     private Panel _donclawPanel = null!;
@@ -267,7 +267,7 @@ public class SettingsForm : Form
             Text = "Modo libre →", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(120, 160, 255),
             LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(W - 120, 432), AutoSize = true
         };
-        ((LinkLabel)_modeToggleBtn).LinkClicked += (_, _) => ToggleMode();
+        _modeToggleBtn.LinkClicked += (_, _) => ToggleMode();
         Controls.Add(_modeToggleBtn);
 
         Controls.Add(new Panel { Location = new Point(20, 456), Size = new Size(W - 40, 1), BackColor = Color.FromArgb(50, 50, 58) });
@@ -290,7 +290,7 @@ public class SettingsForm : Form
         _isDonClawMode = !_isDonClawMode;
         _donclawPanel.Visible = _isDonClawMode;
         _freePanel.Visible = !_isDonClawMode;
-        ((LinkLabel)_modeToggleBtn).Text = _isDonClawMode ? "Modo libre →" : "← DonClaw";
+        _modeToggleBtn.Text = _isDonClawMode ? "Modo libre →" : "← DonClaw";
 
         if (!_isDonClawMode)
         {
@@ -581,9 +581,9 @@ public class SettingsForm : Form
     /// <summary>Simple logger bridge for DonClawApiClient.</summary>
     private class TrayLogger : IOpenClawLogger
     {
-        public void Info(string msg) => Logger.Log($"[API] {msg}");
+        public void Info(string msg) => Logger.Info($"[API] {msg}");
         public void Debug(string msg) { }
-        public void Warn(string msg) => Logger.Log($"[API] WARN: {msg}");
-        public void Error(string msg, Exception? ex = null) => Logger.Log($"[API] ERROR: {msg}{(ex != null ? $": {ex.Message}" : "")}");
+        public void Warn(string msg) => Logger.Warn($"[API] {msg}");
+        public void Error(string msg, Exception? ex = null) => Logger.Error($"[API] {msg}{(ex != null ? $": {ex.Message}" : "")}");
     }
 }
