@@ -154,6 +154,7 @@ public abstract class WebSocketClientBase : IDisposable
                     var closeStatus = _webSocket.CloseStatus?.ToString() ?? "unknown";
                     var closeDesc = _webSocket.CloseStatusDescription ?? "no description";
                     _logger.Info($"Server closed connection: {closeStatus} - {closeDesc}");
+                    OnServerClosed(closeStatus, closeDesc);
                     OnDisconnected();
                     RaiseStatusChanged(ConnectionStatus.Disconnected);
                     break;
@@ -185,6 +186,14 @@ public abstract class WebSocketClientBase : IDisposable
             catch (ObjectDisposedException) { }
         }
     }
+
+    /// <summary>
+    /// Hook called when the server cleanly closes the WebSocket. Subclasses can
+    /// override to react to specific close reasons (e.g. clear stored auth state
+    /// on "unauthorized" / "PolicyViolation" so the next reconnect falls back to
+    /// bootstrap credentials instead of looping forever).
+    /// </summary>
+    protected virtual void OnServerClosed(string closeStatus, string closeDesc) { }
 
     protected async Task ReconnectWithBackoffAsync()
     {

@@ -35,7 +35,13 @@ public class DonClawNodeClient : WebSocketClientBase
     public IReadOnlyList<INodeCapability> Capabilities => _capabilities;
 
     public bool IsPendingApproval => _isPendingApproval;
-    public bool IsPaired => !string.IsNullOrEmpty(_deviceIdentity.DeviceToken);
+    /// <summary>
+    /// Whether this specific gateway URL already has a stored device token.
+    /// Tokens are per-gateway now (see DeviceIdentity), so flipping between a
+    /// LAN gateway and a DonClaw cloud instance no longer carries stale auth
+    /// and triggers "too many failed authentication attempts" lockouts.
+    /// </summary>
+    public bool IsPaired => !string.IsNullOrEmpty(_deviceIdentity.GetDeviceTokenFor(GatewayUrlForDisplay));
 
     public string ShortDeviceId => _deviceIdentity.DeviceId.Length > 16
         ? _deviceIdentity.DeviceId.Substring(0, 16)
@@ -102,6 +108,33 @@ public class DonClawNodeClient : WebSocketClientBase
         RaiseStatusChanged(ConnectionStatus.Disconnected);
         _logger.Info("Node disconnected");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Hook: the gateway closed the WS with a reason. If it rejected our auth
+    /// (PolicyViolation + "unauthorized" / "too many failed authentication"
+    /// / "not paired"), clear the stored device token for this gateway so the
+    /// next reconnect retries with the bootstrap token and gets a fresh one.
+    /// Without this the Node would loop forever presenting a stale token that
+    /// belongs to a different gateway, trip the rate limiter, and never recover.
+    /// </summary>
+    protected override void OnServerClosed(string closeStatus, string closeDesc)
+    {
+        if (string.IsNullOrEmpty(closeDesc)) return;
+        var desc = closeDesc.ToLowerInvariant();
+        var looksLikeAuthFailure =
+            desc.Contains("unauthorized")
+            || desc.Contains("failed authentication")
+            || desc.Contains("not paired")
+            || desc.Contains("pairing required")
+            || desc.Contains("invalid token")
+            || desc.Contains("device token");
+
+        if (looksLikeAuthFailure)
+        {
+            _logger.Warn($"Gateway rejected our auth ('{closeDesc}'). Clearing stored token for {GatewayUrlForDisplay} so the next reconnect falls back to the bootstrap token.");
+            _deviceIdentity.ClearDeviceTokenFor(GatewayUrlForDisplay);
+        }
     }
 
     protected override async Task ProcessMessageAsync(string json)
@@ -305,8 +338,12 @@ public class DonClawNodeClient : WebSocketClientBase
         string? signature = null;
         var signedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        var authToken = _deviceIdentity.DeviceToken ?? _token;
-        var isPaired = !string.IsNullOrEmpty(_deviceIdentity.DeviceToken);
+        // Per-gateway device token lookup. If a stored token belongs to ANOTHER
+        // gateway, we must not send it — the receiving gateway would reject it
+        // as "unauthorized" and throttle the IP for a while.
+        var storedToken = _deviceIdentity.GetDeviceTokenFor(GatewayUrlForDisplay);
+        var authToken = storedToken ?? _token;
+        var isPaired = !string.IsNullOrEmpty(storedToken);
         // Only send the bootstrap token on the very first connect (before pairing).
         var useBootstrap = !isPaired && !string.IsNullOrEmpty(_bootstrapToken);
 
@@ -408,7 +445,7 @@ public class DonClawNodeClient : WebSocketClientBase
                     var wasWaiting = _isPendingApproval;
                     _isPendingApproval = false;
                     _logger.Info("Received device token - we are now paired!");
-                    _deviceIdentity.StoreDeviceToken(deviceToken);
+                    _deviceIdentity.StoreDeviceTokenFor(GatewayUrlForDisplay, deviceToken);
                     // Bootstrap token (if any) has been consumed by the gateway.
                     BootstrapConsumed?.Invoke(this, EventArgs.Empty);
                     PairingStatusChanged?.Invoke(this, new PairingStatusEventArgs(
@@ -422,7 +459,7 @@ public class DonClawNodeClient : WebSocketClientBase
 
             if (!gotNewToken)
             {
-                if (string.IsNullOrEmpty(_deviceIdentity.DeviceToken))
+                if (string.IsNullOrEmpty(_deviceIdentity.GetDeviceTokenFor(GatewayUrlForDisplay)))
                 {
                     _isPendingApproval = true;
                     _logger.Info($"Not yet paired - run: openclaw devices approve {_deviceIdentity.DeviceId}");
