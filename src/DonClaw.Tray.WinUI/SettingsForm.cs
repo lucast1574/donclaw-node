@@ -276,6 +276,33 @@ public class SettingsForm : Form
         exitLink.LinkClicked += (_, _) => { _nodeService?.Dispose(); Application.Exit(); };
         Controls.Add(exitLink);
 
+        // Copy-LAN-token helper: lets the user grab the bearer token for
+        // remote scripts/agents that want to hit http://host:9800 from the LAN.
+        // Loopback calls don't need it, so this is optional.
+        var tokenLink = new LinkLabel
+        {
+            Text = "🔑 Copy LAN token",
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = Color.FromArgb(140, 140, 150),
+            LinkColor = Color.FromArgb(140, 140, 150),
+            Location = new Point(170, 408),
+            AutoSize = true,
+        };
+        tokenLink.LinkClicked += (_, _) =>
+        {
+            try
+            {
+                _settings.EnsureLocalApiToken();
+                Clipboard.SetText(_settings.LocalApiToken);
+                tokenLink.Text = "✅ Copied";
+                var t = new System.Windows.Forms.Timer { Interval = 1500 };
+                t.Tick += (_, _) => { tokenLink.Text = "🔑 Copy LAN token"; t.Stop(); t.Dispose(); };
+                t.Start();
+            }
+            catch { }
+        };
+        Controls.Add(tokenLink);
+
         Controls.Add(new Label { Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}", ForeColor = Color.FromArgb(50, 50, 60), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, 432), Size = new Size(W - 40, 20), TextAlign = ContentAlignment.MiddleCenter });
     }
 

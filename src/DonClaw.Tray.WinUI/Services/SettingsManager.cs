@@ -35,6 +35,15 @@ public class SettingsManager
     /// <summary>Currently connected instance ID (from DonClaw).</summary>
     public string ConnectedInstanceId { get; set; } = "";
 
+    // ── Local API (HTTP server on port 9800) ────────────────────────────
+    /// <summary>
+    /// Bearer token required for LAN calls to the Local API (http://host:9800).
+    /// Auto-generated on first run; see <see cref="EnsureLocalApiToken"/>.
+    /// Loopback calls (127.0.0.1 / ::1) are exempt because they originate on
+    /// the user's own machine. /ping and /caps are also public (no secrets).
+    /// </summary>
+    public string LocalApiToken { get; set; } = "";
+
     public bool IsDonClawLoggedIn => !string.IsNullOrWhiteSpace(DonClawToken);
 
     public bool IsConfigured =>
@@ -66,10 +75,34 @@ public class SettingsManager
                     DonClawEmail = data.DonClawEmail ?? "";
                     DonClawUserId = data.DonClawUserId ?? "";
                     ConnectedInstanceId = data.ConnectedInstanceId ?? "";
+                    LocalApiToken = data.LocalApiToken ?? "";
                 }
             }
+
+            // First run (or upgrade from older build): generate a persistent
+            // Local API token so LAN clients can authenticate.
+            EnsureLocalApiToken();
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Make sure we have a non-empty Local API token. Generates one if missing
+    /// and persists it to disk.
+    /// </summary>
+    public void EnsureLocalApiToken()
+    {
+        if (!string.IsNullOrWhiteSpace(LocalApiToken)) return;
+
+        // 32 random bytes → 43-char base64url — enough entropy, URL-safe.
+        var bytes = new byte[32];
+        using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(bytes);
+        }
+        LocalApiToken = Convert.ToBase64String(bytes)
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        Save();
     }
 
     public void Save()
@@ -87,6 +120,7 @@ public class SettingsManager
                     DonClawEmail = DonClawEmail,
                     DonClawUserId = DonClawUserId,
                     ConnectedInstanceId = ConnectedInstanceId,
+                    LocalApiToken = LocalApiToken,
                 }, Opts));
         }
         catch { }
@@ -123,6 +157,7 @@ public class SettingsManager
         public string? DonClawEmail { get; set; }
         public string? DonClawUserId { get; set; }
         public string? ConnectedInstanceId { get; set; }
+        public string? LocalApiToken { get; set; }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

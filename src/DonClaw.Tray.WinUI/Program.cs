@@ -27,14 +27,27 @@ static class Program
     // Cache loaded logo for tray icon
     private static Image? _logoImage;
 
+    /// <summary>
+    /// When true, skip any UI pop-ups at startup — sit quietly in the tray until
+    /// the user clicks the icon. Set by the --silent CLI flag, which AutoStartManager
+    /// appends to the registered Run entry so Windows login doesn't throw the
+    /// Settings window in the user's face on every boot.
+    /// </summary>
+    private static bool _silentStartup;
+
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        _silentStartup = args.Any(a =>
+            a.Equals("--silent", StringComparison.OrdinalIgnoreCase)
+            || a.Equals("/silent", StringComparison.OrdinalIgnoreCase)
+            || a.Equals("-s", StringComparison.OrdinalIgnoreCase));
+
         // Single instance
         using var mutex = new Mutex(true, "DonClawNodeMutex", out bool created);
         if (!created) { Logger.Info("Already running"); return; }
 
-        Logger.Info($"=== DonClaw Node v{Version} starting ===");
+        Logger.Info($"=== DonClaw Node v{Version} starting{(_silentStartup ? " (silent)" : "")} ===");
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -106,13 +119,18 @@ static class Program
         // Start text finder (local OCR)
         _textFinder = new TextFinder();
 
-        // Start local API server (direct HTTP access to capabilities)
+        // Start local API server (direct HTTP access to capabilities).
+        // Auth: loopback always allowed (same machine). LAN callers need the
+        // bearer token from settings. /ping and /caps are public.
         _localApi = new LocalApiServer(LocalApiPort, _nodeService.GetCapabilities(), new AppLogger());
         _localApi.Cache = _screenshotCache;
         _localApi.Finder = _textFinder;
         _localApi.Sequence = new SequenceEngine(
             _nodeService.GetCapabilities(), _textFinder, _screenshotCache, new AppLogger());
+        _localApi.AuthToken = _settings.LocalApiToken;
         _localApi.Start();
+        Logger.Info($"[LocalAPI] Auth token configured ({_settings.LocalApiToken.Length} chars). " +
+                    "Loopback calls bypass auth.");
 
         // Auto-connect if configured
         // Auto-connect only if we have a valid host AND token
@@ -131,8 +149,21 @@ static class Program
         }
         else
         {
-            _trayIcon.ShowBalloonTip(3000, "DonClaw Node", "Click to configure your connection.", ToolTipIcon.Info);
-            ShowSettings();
+            // No valid connection configured yet.
+            // On silent startup (triggered by Windows login): just a discreet
+            // balloon tip. The user opens Settings by clicking the tray icon
+            // whenever they're ready. This avoids the "pops up in my face every
+            // boot" complaint.
+            // On manual launch: open Settings immediately — the user just
+            // double-clicked the shortcut, they expect something to happen.
+            _trayIcon.ShowBalloonTip(3000, "DonClaw Node",
+                _silentStartup
+                    ? "Click the tray icon to configure your connection."
+                    : "Click to configure your connection.",
+                ToolTipIcon.Info);
+
+            if (!_silentStartup)
+                ShowSettings();
         }
 
         Application.Run();

@@ -28,7 +28,12 @@ public static class AutoStartManager
             {
                 var exe = Environment.ProcessPath ?? "";
                 if (!string.IsNullOrEmpty(exe))
-                    key.SetValue(AppName, $"\"{exe}\"");
+                {
+                    // Pass --silent so startup via Windows login goes straight to tray
+                    // without popping the Settings window. The user can still open it
+                    // by clicking the tray icon whenever they want.
+                    key.SetValue(AppName, $"\"{exe}\" --silent");
+                }
             }
             else
             {

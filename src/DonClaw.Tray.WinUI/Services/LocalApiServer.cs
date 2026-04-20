@@ -47,6 +47,21 @@ public class LocalApiServer : IDisposable
     private readonly int _port;
     private Task? _listenTask;
 
+    /// <summary>
+    /// Bearer token required for non-loopback, non-public requests. Empty string
+    /// disables auth entirely (legacy behaviour). Settable so the tray can
+    /// rotate it without restarting the server.
+    /// </summary>
+    public string AuthToken { get; set; } = "";
+
+    /// <summary>Public endpoints (no token required even from LAN). Keep this
+    /// list short — only include things that reveal no secrets and do no harm.</summary>
+    private static readonly HashSet<string> PublicPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/ping",
+        "/caps",
+    };
+
     /// <summary>Screenshot cache (used internally by sequence engine, NOT exposed as image endpoint).</summary>
     public ScreenshotCache? Cache { get; set; }
 
@@ -104,6 +119,9 @@ public class LocalApiServer : IDisposable
         client.ReceiveTimeout = 5000;
         client.SendTimeout = 5000;
 
+        // Identify the caller — loopback is trusted, LAN needs the bearer token.
+        var isLoopback = IsLoopback(client);
+
         try
         {
             using var stream = client.GetStream();
@@ -154,6 +172,22 @@ public class LocalApiServer : IDisposable
             {
                 await SendResponse(stream, 204, null, "");
                 return;
+            }
+
+            // ── Auth gate ──────────────────────────────────────────────────
+            // Public endpoints bypass auth. Loopback bypasses auth (the user's
+            // own machine — Control UI, localhost scripts). Everyone else must
+            // present the bearer token in Authorization header or ?token= query.
+            if (!PublicPaths.Contains(path) && !isLoopback && !string.IsNullOrEmpty(AuthToken))
+            {
+                if (!IsAuthorized(headers, query))
+                {
+                    var remote = (client.Client.RemoteEndPoint as IPEndPoint)?.Address?.ToString() ?? "?";
+                    _logger.Warn($"[LocalAPI] Unauthorized {method} {path} from {remote}");
+                    await SendError(stream, 401,
+                        "Unauthorized. Provide Authorization: Bearer <token> or ?token=<token>.");
+                    return;
+                }
             }
 
             // Route
@@ -536,6 +570,63 @@ public class LocalApiServer : IDisposable
         if (body.Length > 0)
             await stream.WriteAsync(body);
         await stream.FlushAsync();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────
+    // Auth helpers
+    // ─────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether the client connected from the loopback interface (127.0.0.0/8 or ::1).
+    /// Loopback = same machine, so we trust it implicitly.
+    /// </summary>
+    private static bool IsLoopback(TcpClient client)
+    {
+        try
+        {
+            if (client.Client.RemoteEndPoint is IPEndPoint ep)
+                return IPAddress.IsLoopback(ep.Address);
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>
+    /// Check the bearer token against <see cref="AuthToken"/>.
+    /// Accepts either:
+    ///   Authorization: Bearer &lt;token&gt;
+    ///   X-DonClaw-Token: &lt;token&gt;
+    ///   ?token=&lt;token&gt; in the query string (for simple curl/GET tests)
+    /// Comparison is constant-time to avoid timing leaks.
+    /// </summary>
+    private bool IsAuthorized(Dictionary<string, string> headers, Dictionary<string, string> query)
+    {
+        string? presented = null;
+
+        if (headers.TryGetValue("Authorization", out var authHeader)
+            && !string.IsNullOrWhiteSpace(authHeader))
+        {
+            if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                presented = authHeader.Substring("Bearer ".Length).Trim();
+        }
+
+        if (string.IsNullOrEmpty(presented)
+            && headers.TryGetValue("X-DonClaw-Token", out var xHeader))
+        {
+            presented = xHeader.Trim();
+        }
+
+        if (string.IsNullOrEmpty(presented)
+            && query.TryGetValue("token", out var qToken))
+        {
+            presented = qToken.Trim();
+        }
+
+        if (string.IsNullOrEmpty(presented)) return false;
+
+        var a = Encoding.UTF8.GetBytes(presented);
+        var b = Encoding.UTF8.GetBytes(AuthToken);
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(a, b);
     }
 
     private static Dictionary<string, string> ParseQuery(string qs)
