@@ -59,9 +59,8 @@ OutputBaseFilename=DonClawNode-Setup-{#MyAppVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 
-; Tell Windows this setup is signed by a real publisher and is not a Microsoft
-; Store app. Remove once we have an EV cert and can actually sign.
-SignTool=
+; TODO: once we have an EV code-signing cert, add a [Setup] SignTool= entry
+; plus SignedUninstaller=yes so Windows SmartScreen stops scaring users.
 SetupIconFile=..\src\DonClaw.Tray.WinUI\Assets\donclaw.ico
 
 [Languages]
