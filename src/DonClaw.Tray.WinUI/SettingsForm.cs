@@ -584,6 +584,6 @@ public class SettingsForm : Form
         public void Info(string msg) => Logger.Log($"[API] {msg}");
         public void Debug(string msg) { }
         public void Warn(string msg) => Logger.Log($"[API] WARN: {msg}");
-        public void Error(string msg) => Logger.Log($"[API] ERROR: {msg}");
+        public void Error(string msg, Exception? ex = null) => Logger.Log($"[API] ERROR: {msg}{(ex != null ? $": {ex.Message}" : "")}");
     }
 }
