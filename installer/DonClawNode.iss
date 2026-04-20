@@ -59,8 +59,16 @@ OutputBaseFilename=DonClawNode-Setup-{#MyAppVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 
-; TODO: once we have an EV code-signing cert, add a [Setup] SignTool= entry
-; plus SignedUninstaller=yes so Windows SmartScreen stops scaring users.
+; Code signing: flip these on once we have a real cert. Until then Windows
+; SmartScreen and Chrome's safe-browsing scare users with red warnings on
+; every download — not a real security issue but a conversion killer.
+;
+; Easiest path today: Azure Trusted Signing (~$10/mo) gives EV-like reputation
+; without managing an HSM. Once configured via `signtool` on PATH, uncomment
+; both lines below and pass /SignTool=signtool to ISCC.
+;
+;SignTool=signtool
+;SignedUninstaller=yes
 SetupIconFile=..\src\DonClaw.Tray.WinUI\Assets\donclaw.ico
 
 [Languages]
@@ -102,20 +110,11 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Iniciar {#MyAppName} ahora"; \
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#MyAppExeName}"; \
   Flags: runhidden; RunOnceId: "KillNode"
 
-[Code]
-// Friendly bail-out message when the publish folder is empty — easier to
-// debug than Inno's default "0 files compiled" warning.
-function InitializeSetup(): Boolean;
-var
-  PublishPath: String;
-begin
-  Result := True;
-  PublishPath := '{#PublishDir}';
-  if not FileExists(PublishPath + '\{#MyAppExeName}') then
-  begin
-    MsgBox('No se encontró ' + PublishPath + '\{#MyAppExeName}.' + #13#10 +
-           'Ejecuta "dotnet publish" antes de compilar el instalador.',
-           mbError, MB_OK);
-    Result := False;
-  end;
-end;
+; Build-time sanity check: fail the ISCC compile (not the user install!) if
+; the publish folder is empty. Runs at COMPILER time via a preprocessor
+; directive — previously this lived in an [Code] InitializeSetup() function
+; that ran on the END-USER machine looking for the author's build path,
+; which obviously wasn't there so the installer aborted on first screen.
+#if !FileExists(AddBackslash(PublishDir) + MyAppExeName)
+  #error The publish folder does not contain the Node exe. Run `dotnet publish` before compiling the installer.
+#endif
