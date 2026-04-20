@@ -1,0 +1,31 @@
+# Build output
+**/bin/
+**/obj/
+publish/
+C:/donclaw-build-new/
+C:/donclaw-build/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# .NET
+*.pdb
+*.dll.config
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Logs / local state
+*.log
+*.tmp
+
+# Node tray local secrets (never commit these)
+**/settings.json.local
+**/device-key*.json
