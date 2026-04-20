@@ -286,6 +286,7 @@ public class SettingsForm : Form
         _donclawPanel.Visible = _isDonClawMode;
         _freePanel.Visible = !_isDonClawMode;
         _modeToggleBtn.Text = _isDonClawMode ? "Modo libre →" : "← DonClaw";
+        BringFooterToFront();
 
         if (!_isDonClawMode)
         {
@@ -376,6 +377,27 @@ public class SettingsForm : Form
         // Expand window to full size
         Size = new Size(W, H_FULL);
         Region = CreateRoundedRegion(W, H_FULL, R);
+
+        // Footer sits at absolute Y but _donclawPanel (opaque) overlaps it;
+        // raise footer controls above the panel so they render on top.
+        BringFooterToFront();
+    }
+
+    private void BringFooterToFront()
+    {
+        try
+        {
+            _autoStartCheck?.BringToFront();
+            _modeToggleBtn?.BringToFront();
+            foreach (Control c in Controls)
+            {
+                // Footer separator + Logs/Exit + version label are direct children
+                // with small heights near the bottom — bring them all forward.
+                if (c == _donclawPanel || c == _freePanel) continue;
+                c.BringToFront();
+            }
+        }
+        catch { /* best-effort visual fix */ }
     }
 
     private void OnLogoutClick(object? sender, EventArgs e)
