@@ -16,9 +16,12 @@ public class DonClawApiClient : IDisposable
     private string? _jwtToken;
 
     public const string DefaultApiUrl = "https://api.donclaw.com";
+    // Backend responds with camelCase keys (gatewayUrl, gatewayToken, workspaceName,
+    // etc.). Previous SnakeCaseLower policy silently deserialized everything to
+    // empty strings, which caused the "Connect" flow to fail with "no token".
     private static readonly JsonSerializerOptions s_jsonOpts = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
     };
 

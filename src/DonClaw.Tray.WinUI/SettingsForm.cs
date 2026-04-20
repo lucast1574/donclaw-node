@@ -218,13 +218,31 @@ public class SettingsForm : Form
 
         int y = 10;
         _freePanel.Controls.Add(new Label { Text = "Gateway Host", Font = new Font("Segoe UI", 9f, FontStyle.Bold), ForeColor = Color.FromArgb(200, 200, 200), Location = new Point(20, y), AutoSize = true });
-        _hostInput = new TextBox { Location = new Point(20, y + 22), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f) };
+        _hostInput = new TextBox
+        {
+            Location = new Point(20, y + 22), Size = new Size(W - 40, 28),
+            BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f),
+            // Prefill with previously used Free-mode host so users don't retype every time
+            Text = !string.IsNullOrWhiteSpace(_settings.FreeGatewayHost)
+                ? _settings.FreeGatewayHost
+                : _settings.GatewayHost,
+        };
         _freePanel.Controls.Add(_hostInput);
         _freePanel.Controls.Add(new Label { Text = "ws://local-ip:18789 or wss://your.tailscale.ts.net", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
 
         y += 75;
         _freePanel.Controls.Add(new Label { Text = "Token", Font = new Font("Segoe UI", 9f, FontStyle.Bold), ForeColor = Color.FromArgb(200, 200, 200), Location = new Point(20, y), AutoSize = true });
-        _tokenInput = new TextBox { Location = new Point(20, y + 22), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), UseSystemPasswordChar = true };
+        _tokenInput = new TextBox
+        {
+            Location = new Point(20, y + 22), Size = new Size(W - 40, 28),
+            BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f),
+            UseSystemPasswordChar = true,
+            Text = !string.IsNullOrWhiteSpace(_settings.FreeToken)
+                ? _settings.FreeToken
+                : _settings.Token,
+        };
         _freePanel.Controls.Add(_tokenInput);
         _freePanel.Controls.Add(new Label { Text = "Gateway token from your OpenClaw instance", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
 
@@ -317,8 +335,15 @@ public class SettingsForm : Form
 
         if (!_isDonClawMode)
         {
-            _hostInput.Text = _settings.GatewayHost;
-            _tokenInput.Text = _settings.Token;
+            // Always show the Free-mode credentials, not whatever is currently live
+            // (which might be a DonClaw instance URL). Falls back to the live slot
+            // if no Free-mode credentials have ever been saved.
+            _hostInput.Text = !string.IsNullOrWhiteSpace(_settings.FreeGatewayHost)
+                ? _settings.FreeGatewayHost
+                : _settings.GatewayHost;
+            _tokenInput.Text = !string.IsNullOrWhiteSpace(_settings.FreeToken)
+                ? _settings.FreeToken
+                : _settings.Token;
         }
     }
 
@@ -528,9 +553,13 @@ public class SettingsForm : Form
 
         try
         {
-            // Connect directly using gatewayUrl + gatewayToken from the API
+            // Connect directly using gatewayUrl + gatewayToken from the API.
             // The gatewayToken serves as both the auth token AND the bootstrap token
-            // (since instances have dangerouslyDisableDeviceAuth=true)
+            // (instances have dangerouslyDisableDeviceAuth=true, so pairing is automatic).
+            //
+            // Live slot (GatewayHost/Token/BootstrapToken) reflects this DonClaw instance.
+            // Free-mode slot (FreeGatewayHost/FreeToken/FreeBootstrapToken) is untouched
+            // so the user's LAN credentials survive when they toggle back.
             _settings.GatewayHost = inst.GatewayUrl;
             _settings.Token = inst.GatewayToken;
             _settings.BootstrapToken = inst.GatewayToken;
@@ -564,17 +593,25 @@ public class SettingsForm : Form
             return;
         }
 
+        // Persist in BOTH the free-mode slot (so it survives a DonClaw detour)
+        // and the live slot (so auto-connect works on next startup).
+        // Bootstrap token defaults to the regular token — the gateway accepts the
+        // same value for both in LAN pairing flows, so the user only needs to
+        // provide one string.
+        _settings.FreeGatewayHost = host;
+        _settings.FreeToken = token;
+        _settings.FreeBootstrapToken = token;
         _settings.GatewayHost = host;
         _settings.Token = token;
+        _settings.BootstrapToken = token;
         _settings.Save();
 
-        var bootstrap = !string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? _settings.BootstrapToken : token;
         _connectBtn.Enabled = false;
         _connectBtn.Text = "⏳...";
         try
         {
             _nodeService.Disconnect();
-            await _nodeService.ConnectAsync(host, token, bootstrap);
+            await _nodeService.ConnectAsync(host, token, token);
         }
         catch (Exception ex) { _statusLabel.Text = $"❌ {ex.Message}"; _statusLabel.ForeColor = Color.FromArgb(240, 60, 60); }
         finally { _connectBtn.Enabled = true; _connectBtn.Text = "🔗 Connect"; }

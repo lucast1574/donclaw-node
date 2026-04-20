@@ -15,6 +15,10 @@ public class SettingsManager
 
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+    /// <summary>
+    /// Active gateway host. Reflects whichever mode connected last (Free or DonClaw)
+    /// so reconnect/auto-connect works out of the box.
+    /// </summary>
     public string GatewayHost { get; set; } = "";
     public string Token { get; set; } = "";
     /// <summary>
@@ -23,6 +27,17 @@ public class SettingsManager
     /// permanent device token.
     /// </summary>
     public string BootstrapToken { get; set; } = "";
+
+    // ── Per-mode credentials ─────────────────────────────────────────────────────────
+    // Stored per-mode so switching between Free and DonClaw doesn't wipe the
+    // other mode's inputs. Live fields above are synced on a successful connect.
+    /// <summary>Host last used in Free mode (e.g. ws://LAN:18789).</summary>
+    public string FreeGatewayHost { get; set; } = "";
+    /// <summary>Gateway token last used in Free mode.</summary>
+    public string FreeToken { get; set; } = "";
+    /// <summary>Bootstrap token for Free mode (optional, often same as token).</summary>
+    public string FreeBootstrapToken { get; set; } = "";
+
     public bool AutoStart { get; set; } = true;
 
     // ── DonClaw account ──────────────────────────────────────────────────
@@ -70,6 +85,9 @@ public class SettingsManager
                     GatewayHost = data.GatewayHost ?? "";
                     Token = data.Token ?? "";
                     BootstrapToken = data.BootstrapToken ?? "";
+                    FreeGatewayHost = data.FreeGatewayHost ?? "";
+                    FreeToken = data.FreeToken ?? "";
+                    FreeBootstrapToken = data.FreeBootstrapToken ?? "";
                     AutoStart = data.AutoStart;
                     DonClawToken = data.DonClawToken ?? "";
                     DonClawEmail = data.DonClawEmail ?? "";
@@ -115,6 +133,9 @@ public class SettingsManager
                     GatewayHost = GatewayHost,
                     Token = Token,
                     BootstrapToken = BootstrapToken,
+                    FreeGatewayHost = FreeGatewayHost,
+                    FreeToken = FreeToken,
+                    FreeBootstrapToken = FreeBootstrapToken,
                     AutoStart = AutoStart,
                     DonClawToken = DonClawToken,
                     DonClawEmail = DonClawEmail,
@@ -151,6 +172,9 @@ public class SettingsManager
         public string? GatewayHost { get; set; }
         public string? Token { get; set; }
         public string? BootstrapToken { get; set; }
+        public string? FreeGatewayHost { get; set; }
+        public string? FreeToken { get; set; }
+        public string? FreeBootstrapToken { get; set; }
         public bool AutoStart { get; set; } = true;
         // DonClaw account
         public string? DonClawToken { get; set; }
