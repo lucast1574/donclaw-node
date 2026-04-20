@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using DonClaw.Shared;
 using DonClaw.Tray.Services;
@@ -10,61 +12,60 @@ using DonClaw.Tray.Services;
 namespace DonClaw.Tray;
 
 /// <summary>
-/// Borderless popup settings window — appears above the system tray (like Molty/OpenClaw).
-/// No title bar, no close/minimize buttons. Clicks outside dismiss it.
-/// Rounded corners with a dark modern UI.
+/// Borderless popup settings window with two modes:
+///  1. DonClaw Account: login → pick instance → auto-connect
+///  2. Free Mode: manual gateway host + token (legacy, self-hosted)
 /// </summary>
 public class SettingsForm : Form
 {
     private readonly SettingsManager _settings;
     private readonly NodeService _nodeService;
+    private DonClawApiClient? _apiClient;
 
-    private TextBox _hostInput = null!;
-    private TextBox _tokenInput = null!;
+    // Shared controls
     private Label _statusLabel = null!;
     private Panel _statusDot = null!;
+    private Label _machineLabel = null!;
+    private CheckBox _autoStartCheck = null!;
+    private Button _modeToggleBtn = null!;
+
+    // DonClaw mode controls
+    private Panel _donclawPanel = null!;
+    private Panel _loginPanel = null!;
+    private Panel _instancesPanel = null!;
+    private TextBox _emailInput = null!;
+    private TextBox _passwordInput = null!;
+    private Button _loginBtn = null!;
+    private Label _loginErrorLabel = null!;
+    private Label _userLabel = null!;
+    private Button _logoutBtn = null!;
+    private ListBox _instancesList = null!;
+    private Button _connectInstanceBtn = null!;
+    private Button _refreshBtn = null!;
+    private List<DonClawApiClient.ConnectableInstance> _instances = new();
+
+    // Free mode controls (legacy)
+    private Panel _freePanel = null!;
+    private TextBox _hostInput = null!;
+    private TextBox _tokenInput = null!;
     private Button _connectBtn = null!;
     private Button _disconnectBtn = null!;
     private Button _testBtn = null!;
-    private CheckBox _autoStartCheck = null!;
-    private Label _machineLabel = null!;
 
-    #region Win32 — Taskbar position detection
-    [DllImport("user32.dll")]
-    private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
+    private bool _isDonClawMode = true;
 
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
+    #region Win32
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromPoint(POINT pt, uint f);
+    [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr h, ref MONITORINFO i);
     private const uint MONITOR_DEFAULTTONEAREST = 2;
-
+    [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X; public int Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MONITORINFO
-    {
-        public int cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public uint dwFlags;
-    }
+    private struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
     #endregion
 
-    // Corner radius for the popup shape
-    private const int CornerRadius = 12;
+    private const int W = 400, H = 520, R = 12;
 
     public SettingsForm(SettingsManager settings, NodeService nodeService)
     {
@@ -72,7 +73,6 @@ public class SettingsForm : Form
         _nodeService = nodeService;
 
         InitializeUI();
-        LoadValues();
 
         _nodeService.StatusChanged += (_, s) =>
         {
@@ -80,527 +80,433 @@ public class SettingsForm : Form
             else UpdateStatus(s);
         };
 
+        // Restore previous session
+        if (_settings.IsDonClawLoggedIn)
+        {
+            _apiClient = new DonClawApiClient(new TrayLogger());
+            _apiClient.SetToken(_settings.DonClawToken);
+            ShowLoggedInState();
+            _ = RefreshInstances();
+        }
+
         UpdateStatus(_nodeService.CurrentStatus);
     }
 
     private void InitializeUI()
     {
-        // --- Borderless popup window ---
         Text = "DonClaw Node";
-        Size = new Size(380, 450);
-        FormBorderStyle = FormBorderStyle.None;  // No borders, no title bar
-        ShowInTaskbar = false;                    // Don't show in taskbar
-        TopMost = true;                           // Always on top
-        StartPosition = FormStartPosition.Manual; // We position it ourselves
+        Size = new Size(W, H);
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
         BackColor = Color.FromArgb(24, 24, 28);
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10);
-
-        // Rounded corners via region
-        Region = CreateRoundedRegion(Size.Width, Size.Height, CornerRadius);
-
-        // Double buffer for smooth rendering
         DoubleBuffered = true;
+        Region = CreateRoundedRegion(W, H, R);
 
-        // --- Title area with logo image ---
-        var titlePanel = new Panel
+        BuildTitleBar();
+        BuildStatusBar();
+        BuildDonClawPanel();
+        BuildFreePanel();
+        BuildFooter();
+
+        _freePanel.Visible = false;
+        _donclawPanel.Visible = true;
+    }
+
+    // ==================== TITLE ====================
+    private void BuildTitleBar()
+    {
+        var p = new Panel { Location = new Point(0, 0), Size = new Size(W, 52), BackColor = BackColor };
+        var logo = new PictureBox { Size = new Size(28, 28), Location = new Point(16, 12), SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent };
+        try { var path = Path.Combine(AppContext.BaseDirectory, "Assets", "icon_white.png"); if (File.Exists(path)) logo.Image = Image.FromFile(path); } catch { }
+        p.Controls.Add(logo);
+        p.Controls.Add(new Label { Text = "DonClaw Node", Font = new Font("Segoe UI", 14, FontStyle.Bold), Location = new Point(50, 14), AutoSize = true });
+        p.Controls.Add(new Label { Text = $"v{Program.Version}", Font = new Font("Segoe UI", 8), ForeColor = Color.FromArgb(100, 100, 110), Location = new Point(225, 20), AutoSize = true });
+        Controls.Add(p);
+    }
+
+    // ==================== STATUS BAR ====================
+    private void BuildStatusBar()
+    {
+        var sp = new Panel { Location = new Point(20, 56), Size = new Size(W - 40, 34), BackColor = Color.FromArgb(34, 34, 40) };
+        MakeRounded(sp, 6);
+        _statusDot = new Panel { Size = new Size(10, 10), Location = new Point(12, 12), BackColor = Color.Gray };
+        _statusDot.Paint += (s, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using var b = new SolidBrush(_statusDot.BackColor); e.Graphics.FillEllipse(b, 0, 0, 9, 9); };
+        _statusLabel = new Label { Text = "Disconnected", ForeColor = Color.FromArgb(160, 160, 160), Font = new Font("Segoe UI", 9f), Location = new Point(28, 8), AutoSize = true };
+        sp.Controls.Add(_statusDot);
+        sp.Controls.Add(_statusLabel);
+        Controls.Add(sp);
+    }
+
+    // ==================== DONCLAW PANEL (Login + Instances) ====================
+    private void BuildDonClawPanel()
+    {
+        _donclawPanel = new Panel { Location = new Point(0, 96), Size = new Size(W, 330), BackColor = BackColor };
+
+        // --- Login subpanel ---
+        _loginPanel = new Panel { Location = new Point(20, 0), Size = new Size(W - 40, 180), BackColor = BackColor };
+
+        _loginPanel.Controls.Add(new Label { Text = "Iniciar sesión en DonClaw", Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(0, 0), AutoSize = true });
+
+        _loginPanel.Controls.Add(new Label { Text = "Email", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(160, 160, 170), Location = new Point(0, 30), AutoSize = true });
+        _emailInput = new TextBox { Location = new Point(0, 50), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f) };
+        _loginPanel.Controls.Add(_emailInput);
+
+        _loginPanel.Controls.Add(new Label { Text = "Contraseña", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(160, 160, 170), Location = new Point(0, 82), AutoSize = true });
+        _passwordInput = new TextBox { Location = new Point(0, 102), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), UseSystemPasswordChar = true };
+        _loginPanel.Controls.Add(_passwordInput);
+
+        _loginBtn = MakeButton("Iniciar sesión", new Point(0, 140), new Size(W - 40, 36), Color.FromArgb(55, 120, 250));
+        _loginBtn.Click += OnLoginClick;
+        _loginPanel.Controls.Add(_loginBtn);
+
+        _loginErrorLabel = new Label { Text = "", ForeColor = Color.FromArgb(240, 100, 100), Font = new Font("Segoe UI", 8f), Location = new Point(0, 178), Size = new Size(W - 40, 18) };
+        _loginPanel.Controls.Add(_loginErrorLabel);
+
+        var googleLink = new LinkLabel { Text = "O inicia sesión con Google →", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(120, 160, 255), LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(0, 178), AutoSize = true };
+        googleLink.LinkClicked += (_, _) =>
         {
-            Location = new Point(0, 0),
-            Size = new Size(380, 52),
-            BackColor = Color.FromArgb(24, 24, 28)
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://donclaw.com/login") { UseShellExecute = true }); } catch { }
         };
+        _loginPanel.Controls.Add(googleLink);
 
-        // Load the DonClaw icon (icon.png — black rounded rect with two white squares)
-        var logoPicture = new PictureBox
-        {
-            Size = new Size(28, 28),
-            Location = new Point(16, 12),
-            SizeMode = PictureBoxSizeMode.Zoom,
-            BackColor = Color.Transparent
-        };
-        try
-        {
-            var logoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "icon_white.png");
-            if (File.Exists(logoPath))
-                logoPicture.Image = Image.FromFile(logoPath);
-        }
-        catch { }
-        titlePanel.Controls.Add(logoPicture);
+        _donclawPanel.Controls.Add(_loginPanel);
 
-        var titleLabel = new Label
+        // --- Instances subpanel (hidden until logged in) ---
+        _instancesPanel = new Panel { Location = new Point(20, 0), Size = new Size(W - 40, 280), BackColor = BackColor, Visible = false };
+
+        _userLabel = new Label { Text = "", Font = new Font("Segoe UI", 9f), ForeColor = Color.FromArgb(160, 200, 255), Location = new Point(0, 0), AutoSize = true };
+        _instancesPanel.Controls.Add(_userLabel);
+
+        _logoutBtn = new LinkLabel { Text = "Cerrar sesión", Font = new Font("Segoe UI", 8f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(W - 140, 2), AutoSize = true };
+        _logoutBtn.LinkClicked += OnLogoutClick;
+        _instancesPanel.Controls.Add(_logoutBtn);
+
+        _instancesPanel.Controls.Add(new Label { Text = "Tus instancias", Font = new Font("Segoe UI", 9f, FontStyle.Bold), Location = new Point(0, 24), AutoSize = true });
+
+        _instancesList = new ListBox
         {
-            Text = "DonClaw Node",
-            Font = new Font("Segoe UI", 14, FontStyle.Bold),
+            Location = new Point(0, 48),
+            Size = new Size(W - 40, 140),
+            BackColor = Color.FromArgb(34, 34, 40),
             ForeColor = Color.White,
-            Location = new Point(50, 14),
-            AutoSize = true
-        };
-        titlePanel.Controls.Add(titleLabel);
-
-        var versionLabel = new Label
-        {
-            Text = $"v{Program.Version}",
-            Font = new Font("Segoe UI", 8),
-            ForeColor = Color.FromArgb(100, 100, 110),
-            Location = new Point(210, 20),
-            AutoSize = true
-        };
-        titlePanel.Controls.Add(versionLabel);
-
-        Controls.Add(titlePanel);
-
-        // --- Status bar ---
-        var statusPanel = new Panel
-        {
-            Location = new Point(20, 56),
-            Size = new Size(340, 34),
-            BackColor = Color.FromArgb(34, 34, 40)
-        };
-        MakeRounded(statusPanel, 6);
-
-        _statusDot = new Panel
-        {
-            Size = new Size(10, 10),
-            Location = new Point(12, 12),
-            BackColor = Color.Gray
-        };
-        _statusDot.Paint += (s, e) =>
-        {
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var brush = new SolidBrush(_statusDot.BackColor);
-            e.Graphics.FillEllipse(brush, 0, 0, 9, 9);
-        };
-
-        _statusLabel = new Label
-        {
-            Text = "Disconnected",
-            ForeColor = Color.FromArgb(160, 160, 160),
-            Font = new Font("Segoe UI", 9f),
-            Location = new Point(28, 8),
-            AutoSize = true
-        };
-
-        statusPanel.Controls.Add(_statusDot);
-        statusPanel.Controls.Add(_statusLabel);
-        Controls.Add(statusPanel);
-
-        // --- Gateway Host ---
-        var hostLabel = new Label
-        {
-            Text = "Gateway Host",
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(200, 200, 200),
-            Location = new Point(20, 105),
-            AutoSize = true
-        };
-        Controls.Add(hostLabel);
-
-        _hostInput = new TextBox
-        {
-            Location = new Point(20, 128),
-            Size = new Size(340, 30),
-            BackColor = Color.FromArgb(40, 40, 46),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 10f)
-        };
-        Controls.Add(_hostInput);
-
-        var hostHint = new Label
-        {
-            Text = "ws://local-ip:18789 or wss://your.tailscale.ts.net",
-            ForeColor = Color.FromArgb(80, 80, 90),
-            Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 155),
-            AutoSize = true
-        };
-        Controls.Add(hostHint);
-
-        // --- Token ---
-        var tokenLabel = new Label
-        {
-            Text = "Token",
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(200, 200, 200),
-            Location = new Point(20, 182),
-            AutoSize = true
-        };
-        Controls.Add(tokenLabel);
-
-        _tokenInput = new TextBox
-        {
-            Location = new Point(20, 205),
-            Size = new Size(340, 30),
-            BackColor = Color.FromArgb(40, 40, 46),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 10f),
-            UseSystemPasswordChar = true
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 32
         };
-        Controls.Add(_tokenInput);
+        _instancesList.DrawItem += OnDrawInstanceItem;
+        _instancesPanel.Controls.Add(_instancesList);
 
-        var tokenHint = new Label
-        {
-            Text = "Ask your DonClaw admin for host + token",
-            ForeColor = Color.FromArgb(80, 80, 90),
-            Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 232),
-            AutoSize = true
-        };
-        Controls.Add(tokenHint);
+        _connectInstanceBtn = MakeButton("Conectar", new Point(0, 196), new Size((W - 48) / 2, 34), Color.FromArgb(55, 120, 250));
+        _connectInstanceBtn.Click += OnConnectInstanceClick;
+        _instancesPanel.Controls.Add(_connectInstanceBtn);
 
-        // --- Machine info (shown when connected) ---
-        _machineLabel = new Label
-        {
-            Text = "",
-            ForeColor = Color.FromArgb(50, 205, 50),
-            Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(20, 252),
-            AutoSize = true,
-            Visible = false
-        };
-        Controls.Add(_machineLabel);
+        _refreshBtn = MakeButton("🔄 Refrescar", new Point((W - 48) / 2 + 8, 196), new Size((W - 48) / 2, 34), Color.FromArgb(50, 50, 58));
+        _refreshBtn.Click += async (_, _) => await RefreshInstances();
+        _instancesPanel.Controls.Add(_refreshBtn);
 
-        // --- Buttons ---
-        _connectBtn = new Button
-        {
-            Text = "🔗 Connect",
-            Location = new Point(20, 280),
-            Size = new Size(108, 38),
-            BackColor = Color.FromArgb(55, 120, 250),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            Cursor = Cursors.Hand
-        };
-        _connectBtn.FlatAppearance.BorderSize = 0;
-        _connectBtn.Click += OnConnectClick;
-        Controls.Add(_connectBtn);
+        _machineLabel = new Label { Text = "", ForeColor = Color.FromArgb(50, 205, 50), Font = new Font("Segoe UI", 8.5f), Location = new Point(0, 238), AutoSize = true, Visible = false };
+        _instancesPanel.Controls.Add(_machineLabel);
 
-        _disconnectBtn = new Button
-        {
-            Text = "⛔ Stop",
-            Location = new Point(136, 280),
-            Size = new Size(108, 38),
-            BackColor = Color.FromArgb(180, 50, 50),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            Cursor = Cursors.Hand,
-            Enabled = false
-        };
-        _disconnectBtn.FlatAppearance.BorderSize = 0;
-        _disconnectBtn.Click += (_, _) => { _nodeService.Disconnect(); };
-        Controls.Add(_disconnectBtn);
+        _donclawPanel.Controls.Add(_instancesPanel);
+        Controls.Add(_donclawPanel);
+    }
 
-        _testBtn = new Button
-        {
-            Text = "🔌 Test",
-            Location = new Point(252, 280),
-            Size = new Size(108, 38),
-            BackColor = Color.FromArgb(50, 50, 58),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f),
-            Cursor = Cursors.Hand
-        };
-        _testBtn.FlatAppearance.BorderSize = 1;
-        _testBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 80);
+    // ==================== FREE PANEL (Legacy: Host + Token) ====================
+    private void BuildFreePanel()
+    {
+        _freePanel = new Panel { Location = new Point(0, 96), Size = new Size(W, 330), BackColor = BackColor };
+
+        int y = 10;
+        _freePanel.Controls.Add(new Label { Text = "Gateway Host", Font = new Font("Segoe UI", 9f, FontStyle.Bold), ForeColor = Color.FromArgb(200, 200, 200), Location = new Point(20, y), AutoSize = true });
+        _hostInput = new TextBox { Location = new Point(20, y + 22), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f) };
+        _freePanel.Controls.Add(_hostInput);
+        _freePanel.Controls.Add(new Label { Text = "ws://local-ip:18789 or wss://your.tailscale.ts.net", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
+
+        y += 75;
+        _freePanel.Controls.Add(new Label { Text = "Token", Font = new Font("Segoe UI", 9f, FontStyle.Bold), ForeColor = Color.FromArgb(200, 200, 200), Location = new Point(20, y), AutoSize = true });
+        _tokenInput = new TextBox { Location = new Point(20, y + 22), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), UseSystemPasswordChar = true };
+        _freePanel.Controls.Add(_tokenInput);
+        _freePanel.Controls.Add(new Label { Text = "Gateway token from your OpenClaw instance", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
+
+        y += 80;
+        _connectBtn = MakeButton("🔗 Connect", new Point(20, y), new Size(108, 36), Color.FromArgb(55, 120, 250));
+        _connectBtn.Click += OnFreeConnectClick;
+        _freePanel.Controls.Add(_connectBtn);
+
+        _disconnectBtn = MakeButton("⛔ Stop", new Point(136, y), new Size(108, 36), Color.FromArgb(180, 50, 50));
+        _disconnectBtn.Enabled = false;
+        _disconnectBtn.Click += (_, _) => _nodeService.Disconnect();
+        _freePanel.Controls.Add(_disconnectBtn);
+
+        _testBtn = MakeButton("🔌 Test", new Point(252, y), new Size(108, 36), Color.FromArgb(50, 50, 58));
         _testBtn.Click += OnTestClick;
-        Controls.Add(_testBtn);
+        _freePanel.Controls.Add(_testBtn);
 
-        // --- Auto-start checkbox ---
+        Controls.Add(_freePanel);
+    }
+
+    // ==================== FOOTER ====================
+    private void BuildFooter()
+    {
         _autoStartCheck = new CheckBox
         {
-            Text = "Start with Windows",
-            ForeColor = Color.FromArgb(160, 160, 170),
-            Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(20, 326),
-            AutoSize = true,
-            Checked = AutoStartManager.IsEnabled()
+            Text = "Start with Windows", ForeColor = Color.FromArgb(160, 160, 170), Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(20, 430), AutoSize = true, Checked = AutoStartManager.IsEnabled()
         };
-        _autoStartCheck.CheckedChanged += (_, _) => {
-            AutoStartManager.Set(_autoStartCheck.Checked);
-            _settings.AutoStart = _autoStartCheck.Checked;
-            _settings.Save();
-        };
+        _autoStartCheck.CheckedChanged += (_, _) => { AutoStartManager.Set(_autoStartCheck.Checked); _settings.AutoStart = _autoStartCheck.Checked; _settings.Save(); };
         Controls.Add(_autoStartCheck);
 
-        // --- Separator line ---
-        var separator = new Panel
+        // Mode toggle
+        _modeToggleBtn = new LinkLabel
         {
-            Location = new Point(20, 352),
-            Size = new Size(340, 1),
-            BackColor = Color.FromArgb(50, 50, 58)
+            Text = "Modo libre →", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(120, 160, 255),
+            LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(W - 120, 432), AutoSize = true
         };
-        Controls.Add(separator);
+        ((LinkLabel)_modeToggleBtn).LinkClicked += (_, _) => ToggleMode();
+        Controls.Add(_modeToggleBtn);
 
-        // --- Quick actions row ---
-        var reconnectLink = new LinkLabel
-        {
-            Text = "🔄 Reconnect",
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(140, 140, 150),
-            LinkColor = Color.FromArgb(140, 140, 150),
-            ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(20, 364),
-            AutoSize = true
-        };
-        reconnectLink.LinkClicked += (_, _) =>
-        {
-            if (_settings.IsConfigured)
-            {
-                _nodeService.Disconnect();
-                var boot = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? null : _settings.BootstrapToken;
-                _ = _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, boot);
-            }
-        };
-        Controls.Add(reconnectLink);
+        Controls.Add(new Panel { Location = new Point(20, 456), Size = new Size(W - 40, 1), BackColor = Color.FromArgb(50, 50, 58) });
 
-        var logsLink = new LinkLabel
-        {
-            Text = "📄 Logs",
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(140, 140, 150),
-            LinkColor = Color.FromArgb(140, 140, 150),
-            ActiveLinkColor = Color.FromArgb(100, 160, 255),
-            Location = new Point(130, 364),
-            AutoSize = true
-        };
-        logsLink.LinkClicked += (_, _) =>
-        {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { }
-        };
+        // Quick links
+        var logsLink = new LinkLabel { Text = "📄 Logs", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(20, 464), AutoSize = true };
+        logsLink.LinkClicked += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { } };
         Controls.Add(logsLink);
 
-        var exitLink = new LinkLabel
-        {
-            Text = "❌ Exit",
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(140, 140, 150),
-            LinkColor = Color.FromArgb(140, 140, 150),
-            ActiveLinkColor = Color.FromArgb(255, 100, 100),
-            Location = new Point(210, 364),
-            AutoSize = true
-        };
-        exitLink.LinkClicked += (_, _) =>
-        {
-            _nodeService?.Dispose();
-            Application.Exit();
-        };
+        var exitLink = new LinkLabel { Text = "❌ Exit", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(100, 464), AutoSize = true };
+        exitLink.LinkClicked += (_, _) => { _nodeService?.Dispose(); Application.Exit(); };
         Controls.Add(exitLink);
 
-        // --- Device ID ---
-        var deviceLabel = new Label
-        {
-            Text = "",
-            ForeColor = Color.FromArgb(60, 60, 70),
-            Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 390),
-            AutoSize = true,
-            Name = "deviceLabel"
-        };
-        Controls.Add(deviceLabel);
-
-        // --- Footer ---
-        var footerLabel = new Label
-        {
-            Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}",
-            ForeColor = Color.FromArgb(50, 50, 60),
-            Font = new Font("Segoe UI", 7.5f),
-            Location = new Point(20, 420),
-            Size = new Size(340, 20),
-            TextAlign = ContentAlignment.MiddleCenter
-        };
-        Controls.Add(footerLabel);
+        Controls.Add(new Label { Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}", ForeColor = Color.FromArgb(50, 50, 60), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, 490), Size = new Size(W - 40, 20), TextAlign = ContentAlignment.MiddleCenter });
     }
 
-    /// <summary>
-    /// Show the popup positioned above the system tray area (taskbar notification area),
-    /// just like Molty does. Anchored to bottom-right of the work area.
-    /// </summary>
-    public void ShowAtTray()
+    // ==================== MODE TOGGLE ====================
+    private void ToggleMode()
     {
-        var (x, y) = CalculateTrayPosition();
-        Location = new Point(x, y);
+        _isDonClawMode = !_isDonClawMode;
+        _donclawPanel.Visible = _isDonClawMode;
+        _freePanel.Visible = !_isDonClawMode;
+        ((LinkLabel)_modeToggleBtn).Text = _isDonClawMode ? "Modo libre →" : "← DonClaw";
 
-        // Reapply rounded region in case of DPI changes
-        Region = CreateRoundedRegion(Width, Height, CornerRadius);
-
-        Show();
-        BringToFront();
-        Activate();
+        if (!_isDonClawMode)
+        {
+            _hostInput.Text = _settings.GatewayHost;
+            _tokenInput.Text = _settings.Token;
+        }
     }
 
-    /// <summary>
-    /// Calculate position above the system tray (notification area).
-    /// Puts the popup in the bottom-right of the work area, just above the taskbar.
-    /// </summary>
-    private (int x, int y) CalculateTrayPosition()
+    // ==================== DONCLAW LOGIN ====================
+    private async void OnLoginClick(object? sender, EventArgs e)
     {
-        const int margin = 12;
+        var email = _emailInput.Text.Trim();
+        var password = _passwordInput.Text.Trim();
+        if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
+        {
+            _loginErrorLabel.Text = "Ingresa email y contraseña";
+            return;
+        }
+
+        _loginBtn.Enabled = false;
+        _loginBtn.Text = "⏳ Ingresando...";
+        _loginErrorLabel.Text = "";
+
+        _apiClient?.Dispose();
+        _apiClient = new DonClawApiClient(new TrayLogger());
+        var result = await _apiClient.LoginAsync(email, password);
+
+        _loginBtn.Enabled = true;
+        _loginBtn.Text = "Iniciar sesión";
+
+        if (!result.Success)
+        {
+            _loginErrorLabel.Text = result.Error ?? "Error al iniciar sesión";
+            return;
+        }
+
+        // Save session
+        _settings.DonClawToken = result.Token ?? "";
+        _settings.DonClawEmail = result.Email ?? "";
+        _settings.DonClawUserId = result.UserId ?? "";
+        _settings.Save();
+
+        ShowLoggedInState();
+        await RefreshInstances();
+    }
+
+    private void ShowLoggedInState()
+    {
+        _loginPanel.Visible = false;
+        _instancesPanel.Visible = true;
+        _userLabel.Text = $"👤 {_settings.DonClawEmail}";
+    }
+
+    private void OnLogoutClick(object? sender, EventArgs e)
+    {
+        _nodeService.Disconnect();
+        _settings.ClearDonClawSession();
+        _apiClient?.Dispose();
+        _apiClient = null;
+        _instancesList.Items.Clear();
+        _instances.Clear();
+        _loginPanel.Visible = true;
+        _instancesPanel.Visible = false;
+        _emailInput.Text = "";
+        _passwordInput.Text = "";
+    }
+
+    // ==================== INSTANCES ====================
+    private async Task RefreshInstances()
+    {
+        if (_apiClient == null || !_apiClient.IsAuthenticated) return;
+
+        _refreshBtn.Enabled = false;
+        _refreshBtn.Text = "⏳...";
+
+        // Verify token still valid
+        var valid = await _apiClient.VerifyTokenAsync();
+        if (!valid)
+        {
+            _loginErrorLabel.Text = "Sesión expirada. Inicia sesión de nuevo.";
+            OnLogoutClick(null, EventArgs.Empty);
+            _refreshBtn.Enabled = true;
+            _refreshBtn.Text = "🔄 Refrescar";
+            return;
+        }
+
+        var result = await _apiClient.GetConnectableInstancesAsync();
+        _refreshBtn.Enabled = true;
+        _refreshBtn.Text = "🔄 Refrescar";
+
+        if (!result.Allowed)
+        {
+            _instancesList.Items.Clear();
+            _instancesList.Items.Add(result.Reason ?? "Plan no válido");
+            _instances.Clear();
+            return;
+        }
+
+        _instances = result.Instances ?? new();
+        _instancesList.Items.Clear();
+        foreach (var inst in _instances)
+            _instancesList.Items.Add($"{inst.Name}  ·  {inst.WorkspaceName}");
+
+        if (_instancesList.Items.Count == 0)
+            _instancesList.Items.Add("(No hay instancias activas)");
+    }
+
+    private void OnDrawInstanceItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0) return;
+        e.DrawBackground();
+        var isSelected = (e.State & DrawItemState.Selected) != 0;
+        using var bg = new SolidBrush(isSelected ? Color.FromArgb(55, 120, 250) : Color.FromArgb(34, 34, 40));
+        e.Graphics.FillRectangle(bg, e.Bounds);
+        using var fg = new SolidBrush(Color.White);
+        e.Graphics.DrawString(_instancesList.Items[e.Index]?.ToString() ?? "", e.Font!, fg, e.Bounds.X + 10, e.Bounds.Y + 6);
+        e.DrawFocusRectangle();
+    }
+
+    private async void OnConnectInstanceClick(object? sender, EventArgs e)
+    {
+        var idx = _instancesList.SelectedIndex;
+        if (idx < 0 || idx >= _instances.Count) return;
+
+        var inst = _instances[idx];
+        _connectInstanceBtn.Enabled = false;
+        _connectInstanceBtn.Text = "⏳ Conectando...";
 
         try
         {
-            // Get cursor position to identify which monitor we're on
-            GetCursorPos(out POINT pt);
-            var hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-            var monitorInfo = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-
-            if (GetMonitorInfo(hMonitor, ref monitorInfo))
-            {
-                var workArea = monitorInfo.rcWork;
-
-                // Position: bottom-right corner of work area, with margin
-                int x = workArea.Right - Width - margin;
-                int y = workArea.Bottom - Height - margin;
-
-                return (x, y);
-            }
-        }
-        catch { }
-
-        // Fallback: use Screen class
-        var screen = Screen.PrimaryScreen!;
-        var wa = screen.WorkingArea;
-        return (wa.Right - Width - margin, wa.Bottom - Height - margin);
-    }
-
-    private void LoadValues()
-    {
-        _hostInput.Text = _settings.GatewayHost;
-        _tokenInput.Text = _settings.Token;
-    }
-
-    /// <summary>
-    /// Legacy dialog entry point — retained in case we want to re-expose a setup-code UI later.
-    /// Not wired to any control in v8.3.1+.
-    /// </summary>
-    private void PromptForSetupCode()
-    {
-        using var dlg = new Form
-        {
-            Text = "Paste Setup Code",
-            Size = new Size(440, 260),
-            StartPosition = FormStartPosition.CenterParent,
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            MaximizeBox = false,
-            MinimizeBox = false,
-            BackColor = Color.FromArgb(24, 24, 28),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9.5f),
-            ShowInTaskbar = false,
-            TopMost = true
-        };
-
-        var info = new Label
-        {
-            Text = "Paste the setup code from your DonClaw admin.\r\nIt fills Host + bootstrap token automatically.",
-            ForeColor = Color.FromArgb(170, 170, 180),
-            Font = new Font("Segoe UI", 9f),
-            Location = new Point(14, 12),
-            Size = new Size(400, 36)
-        };
-        dlg.Controls.Add(info);
-
-        var codeBox = new TextBox
-        {
-            Location = new Point(14, 54),
-            Size = new Size(400, 100),
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            BackColor = Color.FromArgb(40, 40, 46),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Consolas", 9f)
-        };
-        dlg.Controls.Add(codeBox);
-
-        var status = new Label
-        {
-            Text = "",
-            ForeColor = Color.FromArgb(240, 120, 120),
-            Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(14, 162),
-            Size = new Size(400, 18),
-            AutoSize = false
-        };
-        dlg.Controls.Add(status);
-
-        var applyBtn = new Button
-        {
-            Text = "Apply",
-            Location = new Point(318, 190),
-            Size = new Size(96, 30),
-            BackColor = Color.FromArgb(55, 120, 250),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
-        };
-        applyBtn.FlatAppearance.BorderSize = 0;
-        dlg.Controls.Add(applyBtn);
-
-        var cancelBtn = new Button
-        {
-            Text = "Cancel",
-            Location = new Point(214, 190),
-            Size = new Size(96, 30),
-            BackColor = Color.FromArgb(50, 50, 58),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f),
-            DialogResult = DialogResult.Cancel
-        };
-        cancelBtn.FlatAppearance.BorderSize = 0;
-        dlg.Controls.Add(cancelBtn);
-        dlg.CancelButton = cancelBtn;
-
-        // Auto-paste from clipboard for convenience
-        try
-        {
-            if (Clipboard.ContainsText())
-            {
-                var clip = Clipboard.GetText().Trim();
-                if (clip.Length > 20 && clip.Length < 4096)
-                    codeBox.Text = clip;
-            }
-        }
-        catch { }
-
-        applyBtn.Click += (_, _) =>
-        {
-            var raw = codeBox.Text.Trim();
-            var decoded = SettingsManager.TryDecodeSetupCode(raw);
+            // Use setup code to connect
+            var decoded = SettingsManager.TryDecodeSetupCode(inst.SetupCode);
             if (decoded == null)
             {
-                status.Text = "❌ Invalid setup code. Ask your admin for a new one.";
-                status.ForeColor = Color.FromArgb(240, 120, 120);
-                return;
+                // Fallback: use gateway URL + token directly
+                _settings.GatewayHost = inst.GatewayUrl;
+                _settings.Token = inst.GatewayToken;
+                _settings.BootstrapToken = inst.GatewayToken;
+            }
+            else
+            {
+                _settings.GatewayHost = decoded.Url ?? inst.GatewayUrl;
+                _settings.BootstrapToken = decoded.BootstrapToken ?? inst.GatewayToken;
+                _settings.Token = inst.GatewayToken;
             }
 
-            _hostInput.Text = decoded.Url ?? "";
-            _settings.GatewayHost = decoded.Url ?? "";
-            _settings.BootstrapToken = decoded.BootstrapToken ?? "";
-            // A fresh bootstrap token implies a fresh pairing: clear stored device token.
-            try
-            {
-                var keyPath = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json");
-                if (File.Exists(keyPath)) File.Delete(keyPath);
-            }
-            catch { }
+            _settings.ConnectedInstanceId = inst.Id;
             _settings.Save();
 
-            dlg.DialogResult = DialogResult.OK;
-            dlg.Close();
-        };
+            // Reset device identity for clean pairing to new instance
+            ResetDeviceIdentity();
 
-        if (dlg.ShowDialog(this) == DialogResult.OK)
+            _nodeService.Disconnect();
+            await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, _settings.BootstrapToken);
+        }
+        catch (Exception ex)
         {
-            _statusLabel.Text = "🎟️ Setup code applied — click Connect";
-            _statusLabel.ForeColor = Color.FromArgb(120, 180, 255);
+            _statusLabel.Text = $"❌ {ex.Message}";
+            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
+        }
+        finally
+        {
+            _connectInstanceBtn.Enabled = true;
+            _connectInstanceBtn.Text = "Conectar";
         }
     }
 
+    // ==================== FREE MODE ====================
+    private async void OnFreeConnectClick(object? sender, EventArgs e)
+    {
+        var host = _hostInput.Text.Trim();
+        var token = _tokenInput.Text.Trim();
+        if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(token))
+        {
+            _statusLabel.Text = "❌ Host and Token required";
+            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
+            return;
+        }
+
+        if (host != _settings.GatewayHost || token != _settings.Token) ResetDeviceIdentity();
+        _settings.GatewayHost = host;
+        _settings.Token = token;
+        _settings.Save();
+
+        var bootstrap = !string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? _settings.BootstrapToken : token;
+        _connectBtn.Enabled = false;
+        _connectBtn.Text = "⏳...";
+        try
+        {
+            _nodeService.Disconnect();
+            await _nodeService.ConnectAsync(host, token, bootstrap);
+        }
+        catch (Exception ex) { _statusLabel.Text = $"❌ {ex.Message}"; _statusLabel.ForeColor = Color.FromArgb(240, 60, 60); }
+        finally { _connectBtn.Enabled = true; _connectBtn.Text = "🔗 Connect"; }
+    }
+
+    private async void OnTestClick(object? sender, EventArgs e)
+    {
+        var host = _hostInput.Text.Trim();
+        if (string.IsNullOrWhiteSpace(host)) { _statusLabel.Text = "❌ Host required"; return; }
+
+        _testBtn.Enabled = false; _testBtn.Text = "⏳...";
+        try
+        {
+            var h = host.StartsWith("ws://") || host.StartsWith("wss://") ? host : "ws://" + host;
+            using var ws = new System.Net.WebSockets.ClientWebSocket();
+            using var cts = new System.Threading.CancellationTokenSource(5000);
+            await ws.ConnectAsync(new Uri(h), cts.Token);
+            await ws.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", cts.Token);
+            _statusLabel.Text = "✅ Reachable!"; _statusLabel.ForeColor = Color.FromArgb(50, 205, 50);
+        }
+        catch (Exception ex) { _statusLabel.Text = $"❌ {ex.Message}"; _statusLabel.ForeColor = Color.FromArgb(240, 60, 60); }
+        finally { _testBtn.Enabled = true; _testBtn.Text = "🔌 Test"; }
+    }
+
+    // ==================== STATUS ====================
     private void UpdateStatus(ConnectionStatus status)
     {
         var (color, text) = status switch
@@ -610,267 +516,74 @@ public class SettingsForm : Form
             ConnectionStatus.Error => (Color.FromArgb(240, 60, 60), "Connection Error"),
             _ => (Color.Gray, "Disconnected")
         };
+        _statusDot.BackColor = color; _statusDot.Invalidate();
+        _statusLabel.Text = text; _statusLabel.ForeColor = color;
+        if (_disconnectBtn != null) _disconnectBtn.Enabled = status == ConnectionStatus.Connected || status == ConnectionStatus.Connecting;
 
-        _statusDot.BackColor = color;
-        _statusDot.Invalidate();
-        _statusLabel.Text = text;
-        _statusLabel.ForeColor = color;
-
-        if (_nodeService.ShortDeviceId != null)
-        {
-            var dl = Controls["deviceLabel"] as Label;
-            if (dl != null) dl.Text = $"Device: {_nodeService.ShortDeviceId}...";
-        }
-
-        // Enable/disable disconnect button
-        _disconnectBtn.Enabled = (status == ConnectionStatus.Connected || status == ConnectionStatus.Connecting);
-
-        // Show machine name when connected
         if (status == ConnectionStatus.Connected)
-        {
-            _machineLabel.Text = $"💻 Connected to {Environment.MachineName}";
-            _machineLabel.ForeColor = Color.FromArgb(50, 205, 50);
-            _machineLabel.Visible = true;
-        }
+        { _machineLabel.Text = $"💻 Connected to {Environment.MachineName}"; _machineLabel.ForeColor = Color.FromArgb(50, 205, 50); _machineLabel.Visible = true; }
         else if (status == ConnectionStatus.Connecting)
-        {
-            _machineLabel.Text = $"💻 Connecting {Environment.MachineName}...";
-            _machineLabel.ForeColor = Color.FromArgb(255, 200, 50);
-            _machineLabel.Visible = true;
-        }
-        else
-        {
-            _machineLabel.Visible = false;
-        }
+        { _machineLabel.Text = $"💻 Connecting..."; _machineLabel.ForeColor = Color.FromArgb(255, 200, 50); _machineLabel.Visible = true; }
+        else { _machineLabel.Visible = false; }
     }
 
-    /// <summary>
-    /// Delete the old device key so the node registers as a new device
-    /// on the target gateway. This is needed when switching between gateways.
-    /// </summary>
     private static void ResetDeviceIdentity()
     {
+        try { var p = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json"); if (File.Exists(p)) File.Delete(p); } catch { }
+    }
+
+    // ==================== POSITIONING ====================
+    public void ShowAtTray()
+    {
+        var (x, y) = CalcPos();
+        Location = new Point(x, y);
+        Region = CreateRoundedRegion(Width, Height, R);
+        Show(); BringToFront(); Activate();
+    }
+
+    private (int, int) CalcPos()
+    {
+        const int m = 12;
         try
         {
-            var keyPath = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json");
-            if (File.Exists(keyPath))
-                File.Delete(keyPath);
+            GetCursorPos(out POINT pt);
+            var mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (GetMonitorInfo(mon, ref mi))
+                return (mi.rcWork.Right - Width - m, mi.rcWork.Bottom - Height - m);
         }
         catch { }
+        var wa = Screen.PrimaryScreen!.WorkingArea;
+        return (wa.Right - Width - m, wa.Bottom - Height - m);
     }
 
-    private async void OnConnectClick(object? sender, EventArgs e)
-    {
-        var host = _hostInput.Text.Trim();
-        var token = _tokenInput.Text.Trim();
-
-        if (string.IsNullOrWhiteSpace(host))
-        {
-            _statusLabel.Text = "❌ Host is required";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            _statusLabel.Text = "❌ Token is required";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-            return;
-        }
-
-        // If host or token changed, reset device identity for clean pairing
-        if (host != _settings.GatewayHost || token != _settings.Token)
-            ResetDeviceIdentity();
-
-        _settings.GatewayHost = host;
-        _settings.Token = token;
-        _settings.Save();
-
-        // Bootstrap strategy:
-        //  - If the stored BootstrapToken is set (setup-code flow), use it.
-        //  - Otherwise, attempt to pair by also sending the Token as a bootstrap candidate.
-        //    The gateway will silently ignore it if it isn't a valid bootstrap.
-        //    Once paired, the device token replaces both and Token becomes irrelevant.
-        var bootstrap = !string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? _settings.BootstrapToken : token;
-        var hasBootstrap = !string.IsNullOrWhiteSpace(bootstrap);
-
-        _connectBtn.Enabled = false;
-        _connectBtn.Text = "⏳ Connecting...";
-
-        try
-        {
-            _nodeService.Disconnect();
-            await _nodeService.ConnectAsync(host, token, hasBootstrap ? bootstrap : null);
-        }
-        catch (Exception ex)
-        {
-            _statusLabel.Text = $"❌ {ex.Message}";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-        }
-        finally
-        {
-            _connectBtn.Enabled = true;
-            _connectBtn.Text = "🔗 Connect";
-        }
-    }
-
-    private async void OnTestClick(object? sender, EventArgs e)
-    {
-        var host = _hostInput.Text.Trim();
-        var token = _tokenInput.Text.Trim();
-
-        if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(token))
-        {
-            _statusLabel.Text = "❌ Fill in Host and Token first";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-            return;
-        }
-
-        _testBtn.Enabled = false;
-        _testBtn.Text = "⏳ Testing...";
-        _statusLabel.Text = "Testing connection...";
-        _statusLabel.ForeColor = Color.FromArgb(255, 200, 50);
-        _statusDot.BackColor = Color.FromArgb(255, 200, 50);
-        _statusDot.Invalidate();
-
-        try
-        {
-            var testHost = host;
-            if (!testHost.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) &&
-                !testHost.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
-                testHost = "ws://" + testHost;
-
-            using var client = new System.Net.WebSockets.ClientWebSocket();
-            client.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);
-            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
-
-            await client.ConnectAsync(new Uri(testHost), cts.Token);
-            await client.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", cts.Token);
-
-            _statusLabel.Text = "✅ Reachable! Click Connect to pair.";
-            _statusLabel.ForeColor = Color.FromArgb(50, 205, 50);
-            _statusDot.BackColor = Color.FromArgb(50, 205, 50);
-        }
-        catch (OperationCanceledException)
-        {
-            _statusLabel.Text = "❌ Connection timed out";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-            _statusDot.BackColor = Color.FromArgb(240, 60, 60);
-        }
-        catch (Exception ex)
-        {
-            _statusLabel.Text = $"❌ {ex.Message}";
-            _statusLabel.ForeColor = Color.FromArgb(240, 60, 60);
-            _statusDot.BackColor = Color.FromArgb(240, 60, 60);
-        }
-        finally
-        {
-            _statusDot.Invalidate();
-            _testBtn.Enabled = true;
-            _testBtn.Text = "🔌 Test";
-        }
-    }
-
-    /// <summary>
-    /// Click outside → close (deactivate hides the popup, just like Molty).
-    /// </summary>
-    protected override void OnDeactivate(EventArgs e)
-    {
-        base.OnDeactivate(e);
-        Hide();
-    }
-
-    /// <summary>
-    /// Don't exit app on close, just hide. Reused on next tray click.
-    /// </summary>
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            Hide();
-        }
-    }
-
-    /// <summary>
-    /// Paint a subtle border around the rounded popup.
-    /// </summary>
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        using var pen = new Pen(Color.FromArgb(55, 55, 62), 1);
-        using var path = CreateRoundedPath(0, 0, Width - 1, Height - 1, CornerRadius);
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        e.Graphics.DrawPath(pen, path);
-    }
-
-    /// <summary>
-    /// Allow dragging the borderless window by clicking on the title area.
-    /// </summary>
-    private bool _dragging;
-    private Point _dragStart;
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        base.OnMouseDown(e);
-        if (e.Button == MouseButtons.Left && e.Y < 52) // Title area height
-        {
-            _dragging = true;
-            _dragStart = e.Location;
-        }
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        if (_dragging)
-        {
-            Location = new Point(
-                Location.X + e.X - _dragStart.X,
-                Location.Y + e.Y - _dragStart.Y);
-        }
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        _dragging = false;
-    }
-
-    /// <summary>Escape key also dismisses the popup.</summary>
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.Escape) { Hide(); return true; }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
+    protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); Hide(); }
+    protected override void OnFormClosing(FormClosingEventArgs e) { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } }
+    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); using var pen = new Pen(Color.FromArgb(55, 55, 62), 1); using var path = RPath(0, 0, Width - 1, Height - 1, R); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; e.Graphics.DrawPath(pen, path); }
+    private bool _drag; private Point _ds;
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left && e.Y < 52) { _drag = true; _ds = e.Location; } }
+    protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (_drag) Location = new Point(Location.X + e.X - _ds.X, Location.Y + e.Y - _ds.Y); }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _drag = false; }
+    protected override bool ProcessCmdKey(ref Message msg, Keys k) { if (k == Keys.Escape) { Hide(); return true; } return base.ProcessCmdKey(ref msg, k); }
 
     #region Helpers
-
-    private static Region CreateRoundedRegion(int w, int h, int r)
+    private static Button MakeButton(string text, Point loc, Size sz, Color bg)
     {
-        using var path = CreateRoundedPath(0, 0, w, h, r);
-        return new Region(path);
+        var b = new Button { Text = text, Location = loc, Size = sz, BackColor = bg, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), Cursor = Cursors.Hand };
+        b.FlatAppearance.BorderSize = 0;
+        return b;
     }
-
-    private static GraphicsPath CreateRoundedPath(int x, int y, int w, int h, int r)
-    {
-        var path = new GraphicsPath();
-        int d = r * 2;
-        path.AddArc(x, y, d, d, 180, 90);
-        path.AddArc(x + w - d, y, d, d, 270, 90);
-        path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
-        path.AddArc(x, y + h - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-
-    private static void MakeRounded(Panel panel, int radius)
-    {
-        panel.Paint += (s, e) =>
-        {
-            using var path = CreateRoundedPath(0, 0, panel.Width, panel.Height, radius);
-            panel.Region = new Region(path);
-        };
-    }
-
+    private static Region CreateRoundedRegion(int w, int h, int r) { using var p = RPath(0, 0, w, h, r); return new Region(p); }
+    private static GraphicsPath RPath(int x, int y, int w, int h, int r) { var p = new GraphicsPath(); int d = r * 2; p.AddArc(x, y, d, d, 180, 90); p.AddArc(x + w - d, y, d, d, 270, 90); p.AddArc(x + w - d, y + h - d, d, d, 0, 90); p.AddArc(x, y + h - d, d, d, 90, 90); p.CloseFigure(); return p; }
+    private static void MakeRounded(Panel p, int r) { p.Paint += (_, e) => { using var path = RPath(0, 0, p.Width, p.Height, r); p.Region = new Region(path); }; }
     #endregion
+
+    /// <summary>Simple logger bridge for DonClawApiClient.</summary>
+    private class TrayLogger : IOpenClawLogger
+    {
+        public void Info(string msg) => Logger.Log($"[API] {msg}");
+        public void Debug(string msg) { }
+        public void Warn(string msg) => Logger.Log($"[API] WARN: {msg}");
+        public void Error(string msg) => Logger.Log($"[API] ERROR: {msg}");
+    }
 }
