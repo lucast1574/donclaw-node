@@ -31,7 +31,15 @@ public class DonClawApiClient : IDisposable
     public DonClawApiClient(IOpenClawLogger logger, string? apiUrl = null)
     {
         _logger = logger;
-        _http = new HttpClient { BaseAddress = new Uri(apiUrl ?? DefaultApiUrl) };
+        // Bound the HTTP timeout so a dead api.donclaw.com doesn't hang the
+        // tray UI thread for the default 100s. 15s is plenty for JSON roundtrips
+        // and short enough that the user gets clear feedback if the backend is
+        // down.
+        _http = new HttpClient
+        {
+            BaseAddress = new Uri(apiUrl ?? DefaultApiUrl),
+            Timeout = TimeSpan.FromSeconds(15),
+        };
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 

@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using DonClaw.Shared;
 using DonClaw.Tray.Services;
+using static DonClaw.Shared.DonClawApiClient;
 
 namespace DonClaw.Tray;
 
@@ -83,15 +85,29 @@ public class SettingsForm : Form
         // Auto-recover from expired/consumed DonClaw bootstrap tokens. When
         // the gateway closes the socket with 'pairing required', ask the
         // backend for a freshly-minted setup code and reconnect with it.
-        // Rate-limited in the client so this only fires every ~15s. In Free
-        // mode (no _apiClient) we do nothing and the existing reconnect loop
-        // just keeps retrying until the operator approves manually.
+        // Also handles the "instance was deleted" case: if the backend says
+        // the instance no longer exists we stop reconnecting, clear the
+        // stored credentials and drop the user back to the instance picker.
+        // Rate-limited in the client (~15s). In Free mode (_apiClient==null)
+        // we do nothing — the existing reconnect loop keeps trying until
+        // the operator approves manually.
         _nodeService.AuthRejected += async (_, reason) =>
         {
             if (_apiClient == null || string.IsNullOrEmpty(_settings.ConnectedInstanceId)) return;
             try
             {
                 var fresh = await _apiClient.GetSetupCodeAsync(_settings.ConnectedInstanceId);
+
+                // Instance was deleted on the backend side — stop the reconnect
+                // loop, clear settings, and put the UI back in a clean state.
+                // Better UX than looping forever against a dead domain.
+                if (fresh != null && IsInstanceGone(fresh.Error))
+                {
+                    if (InvokeRequired) Invoke(HandleInstanceDeleted);
+                    else HandleInstanceDeleted();
+                    return;
+                }
+
                 if (fresh == null
                     || !string.IsNullOrEmpty(fresh.Error)
                     || string.IsNullOrWhiteSpace(fresh.GatewayUrl)
@@ -115,6 +131,8 @@ public class SettingsForm : Form
             _apiClient = new DonClawApiClient(new TrayLogger());
             _apiClient.SetToken(_settings.DonClawToken);
             ShowLoggedInState();
+            // Fire-and-forget; RefreshInstances has its own error handling
+            // so a slow / dead backend doesn't block the window opening.
             _ = RefreshInstances();
         }
 
@@ -511,8 +529,36 @@ public class SettingsForm : Form
         _refreshBtn.Enabled = false;
         _refreshBtn.Text = "⏳...";
 
-        // Verify token still valid
-        var valid = await _apiClient.VerifyTokenAsync();
+        // Verify token still valid. VerifyTokenAsync() catches its own
+        // exceptions and returns false on any error — including timeouts /
+        // backend being down — so we need to distinguish "real 401" from
+        // "backend unreachable". A full unreachable check is best-effort:
+        // if plan-verify fails but there's a stored session we stay logged
+        // in and surface a clear status message.
+        bool valid;
+        try
+        {
+            valid = await _apiClient.VerifyTokenAsync();
+        }
+        catch (TaskCanceledException)
+        {
+            _instancesList.Items.Clear();
+            _instancesList.Items.Add("No se pudo contactar al servidor de DonClaw. Reintenta en un momento.");
+            _instances.Clear();
+            _refreshBtn.Enabled = true;
+            _refreshBtn.Text = "🔄 Refrescar";
+            return;
+        }
+        catch (HttpRequestException)
+        {
+            _instancesList.Items.Clear();
+            _instancesList.Items.Add("No se pudo contactar al servidor de DonClaw. Reintenta en un momento.");
+            _instances.Clear();
+            _refreshBtn.Enabled = true;
+            _refreshBtn.Text = "🔄 Refrescar";
+            return;
+        }
+
         if (!valid)
         {
             _loginErrorLabel.Text = "Sesión expirada. Inicia sesión de nuevo.";
@@ -522,7 +568,30 @@ public class SettingsForm : Form
             return;
         }
 
-        var result = await _apiClient.GetConnectableInstancesAsync();
+        ConnectableResult result;
+        try
+        {
+            result = await _apiClient.GetConnectableInstancesAsync();
+        }
+        catch (TaskCanceledException)
+        {
+            _instancesList.Items.Clear();
+            _instancesList.Items.Add("No se pudo contactar al servidor de DonClaw. Reintenta en un momento.");
+            _instances.Clear();
+            _refreshBtn.Enabled = true;
+            _refreshBtn.Text = "🔄 Refrescar";
+            return;
+        }
+        catch (HttpRequestException)
+        {
+            _instancesList.Items.Clear();
+            _instancesList.Items.Add("No se pudo contactar al servidor de DonClaw. Reintenta en un momento.");
+            _instances.Clear();
+            _refreshBtn.Enabled = true;
+            _refreshBtn.Text = "🔄 Refrescar";
+            return;
+        }
+
         _refreshBtn.Enabled = true;
         _refreshBtn.Text = "🔄 Refrescar";
 
@@ -826,6 +895,51 @@ public class SettingsForm : Form
     private static GraphicsPath RPath(int x, int y, int w, int h, int r) { var p = new GraphicsPath(); int d = r * 2; p.AddArc(x, y, d, d, 180, 90); p.AddArc(x + w - d, y, d, d, 270, 90); p.AddArc(x + w - d, y + h - d, d, d, 0, 90); p.AddArc(x, y + h - d, d, d, 90, 90); p.CloseFigure(); return p; }
     private static void MakeRounded(Panel p, int r) { p.Paint += (_, e) => { using var path = RPath(0, 0, p.Width, p.Height, r); p.Region = new Region(path); }; }
     #endregion
+
+    // ==================== DELETED-INSTANCE HANDLING ====================
+
+    /// <summary>
+    /// Does this backend error message look like "instance no longer exists"?
+    /// We check a small set of substrings because the backend wording can
+    /// shift (404 vs 'not found' vs 'deleted') and we don't want a false
+    /// positive to clear the user's settings on an unrelated error.
+    /// </summary>
+    private static bool IsInstanceGone(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error)) return false;
+        var lower = error.ToLowerInvariant();
+        return lower.Contains("not found")
+            || lower.Contains("no encontrada")
+            || lower.Contains("no longer exists")
+            || lower.Contains("instance deleted")
+            || lower.Contains("instance missing");
+    }
+
+    /// <summary>
+    /// The DonClaw instance this Node was paired with no longer exists on the
+    /// backend. Stop the reconnect loop, wipe the stored gateway credentials
+    /// (keep the DonClaw login so the user doesn't have to sign in again),
+    /// refresh the instance list and leave the UI on the picker.
+    /// </summary>
+    private void HandleInstanceDeleted()
+    {
+        try
+        {
+            _nodeService.Disconnect();
+            _settings.GatewayHost = "";
+            _settings.Token = "";
+            _settings.BootstrapToken = "";
+            _settings.ConnectedInstanceId = "";
+            _settings.Save();
+            _statusLabel.Text = "Instancia eliminada — selecciona otra";
+            _statusLabel.ForeColor = Color.FromArgb(255, 200, 50);
+            _ = RefreshInstances();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"HandleInstanceDeleted failed: {ex.Message}");
+        }
+    }
 
     /// <summary>Simple logger bridge for DonClawApiClient.</summary>
     private class TrayLogger : IOpenClawLogger
