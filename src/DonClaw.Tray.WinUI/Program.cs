@@ -74,16 +74,18 @@ static class Program
             Visible = true
         };
 
-        // Context menu (right-click)
+        // Context menu (right-click) — minimal and clean
         var menu = new ContextMenuStrip();
-        menu.Items.Add("⚙️ Settings", null, (_, _) => ShowSettings());
-        menu.Items.Add("🔄 Reconnect", null, (_, _) => Reconnect());
-        menu.Items.Add("📄 View Logs", null, (_, _) =>
+        menu.BackColor = Color.FromArgb(30, 30, 36);
+        menu.ForeColor = Color.White;
+        menu.Font = new Font("Segoe UI", 9.5f);
+        menu.Renderer = new DarkMenuRenderer();
+        menu.Items.Add("View Logs", null, (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { }
         });
-        menu.Items.Add("-");
-        menu.Items.Add("❌ Exit", null, (_, _) =>
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Exit", null, (_, _) =>
         {
             _nodeService?.Dispose();
             _trayIcon!.Visible = false;
@@ -318,4 +320,50 @@ static class Program
         }
     }
 
+}
+
+/// <summary>Dark-themed context menu renderer for the tray icon.</summary>
+class DarkMenuRenderer : ToolStripProfessionalRenderer
+{
+    public DarkMenuRenderer() : base(new DarkColorTable()) { }
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        e.TextColor = e.Item.Selected ? Color.White : Color.FromArgb(200, 200, 210);
+        base.OnRenderItemText(e);
+    }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        var rc = new Rectangle(Point.Empty, e.Item.Size);
+        using var brush = new SolidBrush(e.Item.Selected ? Color.FromArgb(55, 120, 250) : Color.FromArgb(30, 30, 36));
+        e.Graphics.FillRectangle(brush, rc);
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        var y = e.Item.Height / 2;
+        using var pen = new Pen(Color.FromArgb(50, 50, 58));
+        e.Graphics.DrawLine(pen, 4, y, e.Item.Width - 4, y);
+    }
+
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        using var pen = new Pen(Color.FromArgb(55, 55, 62));
+        var rc = new Rectangle(0, 0, e.AffectedBounds.Width - 1, e.AffectedBounds.Height - 1);
+        e.Graphics.DrawRectangle(pen, rc);
+    }
+}
+
+class DarkColorTable : ProfessionalColorTable
+{
+    public override Color MenuItemSelected => Color.FromArgb(55, 120, 250);
+    public override Color MenuBorder => Color.FromArgb(55, 55, 62);
+    public override Color MenuItemBorder => Color.Transparent;
+    public override Color ImageMarginGradientBegin => Color.FromArgb(30, 30, 36);
+    public override Color ImageMarginGradientMiddle => Color.FromArgb(30, 30, 36);
+    public override Color ImageMarginGradientEnd => Color.FromArgb(30, 30, 36);
+    public override Color ToolStripDropDownBackground => Color.FromArgb(30, 30, 36);
+    public override Color SeparatorDark => Color.FromArgb(50, 50, 58);
+    public override Color SeparatorLight => Color.FromArgb(50, 50, 58);
 }

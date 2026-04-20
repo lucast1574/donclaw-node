@@ -180,29 +180,31 @@ public class SettingsForm : Form
 
         _instancesPanel.Controls.Add(new Label { Text = "Tus instancias", Font = new Font("Segoe UI", 9f, FontStyle.Bold), Location = new Point(0, 24), AutoSize = true });
 
+        // Scrollable panel for instance tiles
         _instancesList = new ListBox
         {
             Location = new Point(0, 48),
-            Size = new Size(W - 40, 140),
-            BackColor = Color.FromArgb(34, 34, 40),
+            Size = new Size(W - 40, 150),
+            BackColor = Color.FromArgb(30, 30, 36),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 10f),
-            BorderStyle = BorderStyle.FixedSingle,
+            BorderStyle = BorderStyle.None,
             DrawMode = DrawMode.OwnerDrawFixed,
-            ItemHeight = 32
+            ItemHeight = 44
         };
         _instancesList.DrawItem += OnDrawInstanceItem;
+        _instancesList.DoubleClick += OnConnectInstanceClick; // Double click to connect
         _instancesPanel.Controls.Add(_instancesList);
 
-        _connectInstanceBtn = MakeButton("Conectar", new Point(0, 196), new Size((W - 48) / 2, 34), Color.FromArgb(55, 120, 250));
+        _connectInstanceBtn = MakeButton("⚡ Conectar", new Point(0, 206), new Size((W - 48) / 2, 34), Color.FromArgb(55, 120, 250));
         _connectInstanceBtn.Click += OnConnectInstanceClick;
         _instancesPanel.Controls.Add(_connectInstanceBtn);
 
-        _refreshBtn = MakeButton("🔄 Refrescar", new Point((W - 48) / 2 + 8, 196), new Size((W - 48) / 2, 34), Color.FromArgb(50, 50, 58));
+        _refreshBtn = MakeButton("🔄 Refrescar", new Point((W - 48) / 2 + 8, 206), new Size((W - 48) / 2, 34), Color.FromArgb(50, 50, 58));
         _refreshBtn.Click += async (_, _) => await RefreshInstances();
         _instancesPanel.Controls.Add(_refreshBtn);
 
-        _machineLabel = new Label { Text = "", ForeColor = Color.FromArgb(50, 205, 50), Font = new Font("Segoe UI", 8.5f), Location = new Point(0, 238), AutoSize = true, Visible = false };
+        _machineLabel = new Label { Text = "", ForeColor = Color.FromArgb(50, 205, 50), Font = new Font("Segoe UI", 8.5f), Location = new Point(0, 248), AutoSize = true, Visible = false };
         _instancesPanel.Controls.Add(_machineLabel);
 
         _donclawPanel.Controls.Add(_instancesPanel);
@@ -440,14 +442,30 @@ public class SettingsForm : Form
 
     private void OnDrawInstanceItem(object? sender, DrawItemEventArgs e)
     {
-        if (e.Index < 0) return;
-        e.DrawBackground();
+        if (e.Index < 0 || e.Index >= _instances.Count) return;
+        var inst = _instances[e.Index];
         var isSelected = (e.State & DrawItemState.Selected) != 0;
-        using var bg = new SolidBrush(isSelected ? Color.FromArgb(55, 120, 250) : Color.FromArgb(34, 34, 40));
-        e.Graphics.FillRectangle(bg, e.Bounds);
-        using var fg = new SolidBrush(Color.White);
-        e.Graphics.DrawString(_instancesList.Items[e.Index]?.ToString() ?? "", e.Font!, fg, e.Bounds.X + 10, e.Bounds.Y + 6);
-        e.DrawFocusRectangle();
+        var rc = e.Bounds;
+
+        // Tile background with rounded feel
+        using var bg = new SolidBrush(isSelected ? Color.FromArgb(55, 120, 250) : Color.FromArgb(38, 38, 44));
+        e.Graphics.FillRectangle(bg, rc.X + 2, rc.Y + 2, rc.Width - 4, rc.Height - 4);
+
+        // Status dot
+        var dotColor = inst.Status == "active" ? Color.FromArgb(50, 205, 50) : Color.Gray;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var dotBrush = new SolidBrush(dotColor);
+        e.Graphics.FillEllipse(dotBrush, rc.X + 12, rc.Y + 10, 8, 8);
+
+        // Instance name (bold)
+        using var nameFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+        using var nameBrush = new SolidBrush(Color.White);
+        e.Graphics.DrawString(inst.Name, nameFont, nameBrush, rc.X + 28, rc.Y + 4);
+
+        // Workspace + domain (smaller, muted)
+        using var subFont = new Font("Segoe UI", 8f);
+        using var subBrush = new SolidBrush(isSelected ? Color.FromArgb(200, 220, 255) : Color.FromArgb(120, 120, 135));
+        e.Graphics.DrawString($"{inst.WorkspaceName}  ·  {inst.Domain}", subFont, subBrush, rc.X + 28, rc.Y + 24);
     }
 
     private async void OnConnectInstanceClick(object? sender, EventArgs e)
@@ -461,22 +479,12 @@ public class SettingsForm : Form
 
         try
         {
-            // Use setup code to connect
-            var decoded = SettingsManager.TryDecodeSetupCode(inst.SetupCode);
-            if (decoded == null)
-            {
-                // Fallback: use gateway URL + token directly
-                _settings.GatewayHost = inst.GatewayUrl;
-                _settings.Token = inst.GatewayToken;
-                _settings.BootstrapToken = inst.GatewayToken;
-            }
-            else
-            {
-                _settings.GatewayHost = decoded.Url ?? inst.GatewayUrl;
-                _settings.BootstrapToken = decoded.BootstrapToken ?? inst.GatewayToken;
-                _settings.Token = inst.GatewayToken;
-            }
-
+            // Connect directly using gatewayUrl + gatewayToken from the API
+            // The gatewayToken serves as both the auth token AND the bootstrap token
+            // (since instances have dangerouslyDisableDeviceAuth=true)
+            _settings.GatewayHost = inst.GatewayUrl;
+            _settings.Token = inst.GatewayToken;
+            _settings.BootstrapToken = inst.GatewayToken;
             _settings.ConnectedInstanceId = inst.Id;
             _settings.Save();
 
@@ -484,7 +492,7 @@ public class SettingsForm : Form
             ResetDeviceIdentity();
 
             _nodeService.Disconnect();
-            await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, _settings.BootstrapToken);
+            await _nodeService.ConnectAsync(inst.GatewayUrl, inst.GatewayToken, inst.GatewayToken);
         }
         catch (Exception ex)
         {
