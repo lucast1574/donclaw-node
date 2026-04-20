@@ -165,6 +165,8 @@ public class SettingsForm : Form
     }
 
     // ==================== TITLE ====================
+    private LinkLabel? _updateBadge;
+
     private void BuildTitleBar()
     {
         var p = new Panel { Location = new Point(0, 0), Size = new Size(W, 52), BackColor = BackColor };
@@ -173,7 +175,56 @@ public class SettingsForm : Form
         p.Controls.Add(logo);
         p.Controls.Add(new Label { Text = "DonClaw Node", Font = new Font("Segoe UI", 14, FontStyle.Bold), Location = new Point(50, 14), AutoSize = true });
         p.Controls.Add(new Label { Text = $"v{Program.Version}", Font = new Font("Segoe UI", 8), ForeColor = Color.FromArgb(100, 100, 110), Location = new Point(225, 20), AutoSize = true });
+
+        // Update badge — hidden until the background check tells us there's a
+        // newer release on GitHub. Clicking it opens the releases page in the
+        // user's browser. We don't silent-install yet because the Node ships
+        // as a loose folder, not a signed MSI; see UpdateChecker.cs.
+        _updateBadge = new LinkLabel
+        {
+            Text = "🔔 Actualización disponible",
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(255, 200, 50),
+            LinkColor = Color.FromArgb(255, 200, 50),
+            Location = new Point(W - 190, 20),
+            AutoSize = true,
+            Visible = false,
+        };
+        p.Controls.Add(_updateBadge);
+
         Controls.Add(p);
+
+        // Kick off the version check in the background. Handler is attached
+        // once the tag URL is known.
+        _ = CheckForUpdateAsync();
+    }
+
+    private async Task CheckForUpdateAsync()
+    {
+        try
+        {
+            var checker = new UpdateChecker(Program.Version, new TrayLogger());
+            var info = await checker.CheckAsync();
+            if (info == null || _updateBadge == null) return;
+
+            void Show()
+            {
+                _updateBadge.Text = $"🔔 v{info.Tag} disponible";
+                _updateBadge.Visible = true;
+                _updateBadge.LinkClicked += (_, _) =>
+                {
+                    try
+                    {
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(info.HtmlUrl) { UseShellExecute = true });
+                    }
+                    catch { /* best-effort */ }
+                };
+            }
+
+            if (InvokeRequired) Invoke(Show);
+            else Show();
+        }
+        catch { /* fail-closed — no badge */ }
     }
 
     // ==================== STATUS BAR ====================
@@ -367,6 +418,55 @@ public class SettingsForm : Form
             catch { }
         };
         Controls.Add(tokenLink);
+
+        // "Run as admin" link: shown only when we aren't already elevated.
+        // If the user clicks it, UAC pops, a new elevated instance starts,
+        // and the current one exits. Keeps the default experience UAC-free
+        // for the 99% of use cases that don't need admin.
+        if (!AdminElevation.IsRunningAsAdmin())
+        {
+            var elevateLink = new LinkLabel
+            {
+                Text = "🛡️ Relanzar como admin",
+                Font = new Font("Segoe UI", 8.5f),
+                ForeColor = Color.FromArgb(140, 140, 150),
+                LinkColor = Color.FromArgb(140, 140, 150),
+                Location = new Point(275, 408),
+                AutoSize = true,
+            };
+            elevateLink.LinkClicked += (_, _) =>
+            {
+                if (AdminElevation.RestartElevated())
+                {
+                    // Clean-shutdown path: close the WS, let Program.Main do
+                    // its own tray-icon dispose via Application.Exit, then the
+                    // elevated instance that UAC just launched takes over.
+                    _nodeService?.Dispose();
+                    Application.Exit();
+                }
+                else
+                {
+                    elevateLink.Text = "❌ Cancelado";
+                    var t = new System.Windows.Forms.Timer { Interval = 2000 };
+                    t.Tick += (_, _) => { elevateLink.Text = "🛡️ Relanzar como admin"; t.Stop(); t.Dispose(); };
+                    t.Start();
+                }
+            };
+            Controls.Add(elevateLink);
+        }
+        else
+        {
+            // Show a soft badge so the user can tell at a glance whether they
+            // already accepted elevation for this session.
+            Controls.Add(new Label
+            {
+                Text = "🛡️ Admin",
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(50, 205, 50),
+                Location = new Point(275, 408),
+                AutoSize = true,
+            });
+        }
 
         Controls.Add(new Label { Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}", ForeColor = Color.FromArgb(50, 50, 60), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, 432), Size = new Size(W - 40, 20), TextAlign = ContentAlignment.MiddleCenter });
     }

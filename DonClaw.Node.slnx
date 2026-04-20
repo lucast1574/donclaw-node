@@ -3,7 +3,8 @@
     "path": "DonClaw.Node.slnx",
     "projects": [
       "src/DonClaw.Shared/DonClaw.Shared.csproj",
-      "src/DonClaw.Tray.WinUI/DonClaw.Tray.WinUI.csproj"
+      "src/DonClaw.Tray.WinUI/DonClaw.Tray.WinUI.csproj",
+      "tests/DonClaw.Shared.Tests/DonClaw.Shared.Tests.csproj"
     ]
   }
 }
