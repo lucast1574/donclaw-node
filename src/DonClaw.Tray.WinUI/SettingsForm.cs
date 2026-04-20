@@ -52,6 +52,7 @@ public class SettingsForm : Form
     private Button _testBtn = null!;
 
     private bool _isDonClawMode = true;
+    private System.Windows.Forms.Timer? _planCheckTimer;
 
     #region Win32
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT p);
@@ -328,7 +329,20 @@ public class SettingsForm : Form
             _apiClient = new DonClawApiClient(new TrayLogger());
             _apiClient.SetToken(token);
 
+            // Verify plan before showing instances
+            var planCheck = await _apiClient.VerifyNodePlanAsync();
+            if (!planCheck.Allowed)
+            {
+                _loginErrorLabel.Text = planCheck.Reason ?? "Plan no válido para usar DonClaw Node.";
+                _loginErrorLabel.ForeColor = Color.FromArgb(240, 100, 100);
+                _settings.ClearDonClawSession();
+                _apiClient?.Dispose();
+                _apiClient = null;
+                return;
+            }
+
             ShowLoggedInState();
+            StartPlanCheckTimer();
             await RefreshInstances();
         }
         catch (TimeoutException)
@@ -365,6 +379,7 @@ public class SettingsForm : Form
     private void OnLogoutClick(object? sender, EventArgs e)
     {
         _nodeService.Disconnect();
+        StopPlanCheckTimer();
         _settings.ClearDonClawSession();
         _apiClient?.Dispose();
         _apiClient = null;
@@ -552,6 +567,70 @@ public class SettingsForm : Form
         else { _machineLabel.Visible = false; }
     }
 
+    // ==================== PLAN VERIFICATION ====================
+
+    /// <summary>Check plan every 30 min. Disconnect if plan expired.</summary>
+    private void StartPlanCheckTimer()
+    {
+        _planCheckTimer?.Stop();
+        _planCheckTimer = new System.Windows.Forms.Timer { Interval = 30 * 60 * 1000 }; // 30 min
+        _planCheckTimer.Tick += async (_, _) => await CheckPlanStillActive();
+        _planCheckTimer.Start();
+    }
+
+    private void StopPlanCheckTimer()
+    {
+        _planCheckTimer?.Stop();
+        _planCheckTimer?.Dispose();
+        _planCheckTimer = null;
+    }
+
+    private async Task CheckPlanStillActive()
+    {
+        if (_apiClient == null || !_apiClient.IsAuthenticated) return;
+
+        try
+        {
+            var valid = await _apiClient.VerifyTokenAsync();
+            if (!valid)
+            {
+                // Token expired
+                if (InvokeRequired) Invoke(() => HandlePlanExpired("Sesión expirada. Inicia sesión de nuevo."));
+                else HandlePlanExpired("Sesión expirada. Inicia sesión de nuevo.");
+                return;
+            }
+
+            var planCheck = await _apiClient.VerifyNodePlanAsync();
+            if (!planCheck.Allowed)
+            {
+                if (InvokeRequired) Invoke(() => HandlePlanExpired(planCheck.Reason ?? "Tu plan ya no permite usar DonClaw Node."));
+                else HandlePlanExpired(planCheck.Reason ?? "Tu plan ya no permite usar DonClaw Node.");
+            }
+        }
+        catch { /* Network error — retry on next tick */ }
+    }
+
+    private void HandlePlanExpired(string reason)
+    {
+        _nodeService.Disconnect();
+        StopPlanCheckTimer();
+        _statusLabel.Text = reason;
+        _statusLabel.ForeColor = Color.FromArgb(240, 100, 100);
+        _statusDot.BackColor = Color.FromArgb(240, 100, 100);
+        _statusDot.Invalidate();
+
+        // Show notification
+        try
+        {
+            var ni = Application.OpenForms.Count > 0 ? null : new NotifyIcon { Icon = SystemIcons.Warning, Visible = true };
+            ni?.ShowBalloonTip(5000, "DonClaw Node", reason, ToolTipIcon.Warning);
+        }
+        catch { }
+
+        // Force logout after short delay
+        OnLogoutClick(null, EventArgs.Empty);
+    }
+
     private static void ResetDeviceIdentity()
     {
         try { var p = Path.Combine(SettingsManager.DataPath, "device-key-ed25519.json"); if (File.Exists(p)) File.Delete(p); } catch { }
@@ -564,6 +643,10 @@ public class SettingsForm : Form
         Location = new Point(x, y);
         Region = CreateRoundedRegion(Width, Height, R);
         Show(); BringToFront(); Activate();
+
+        // Quick plan check when user opens the tray (non-blocking)
+        if (_apiClient?.IsAuthenticated == true)
+            _ = CheckPlanStillActive();
     }
 
     private (int, int) CalcPos()
