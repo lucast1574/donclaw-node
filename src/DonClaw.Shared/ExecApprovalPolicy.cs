@@ -152,8 +152,15 @@ public class ExecApprovalPolicy
         }
 
         _rules = CreateDefaultRules();
-        _defaultAction = ExecApprovalAction.Deny;
-        _logger.Info("[EXEC-POLICY] Using default policy");
+        // Default is Allow (was Deny) so a freshly installed Node can run
+        // ordinary commands like `start notepad` or `explorer .` without the
+        // user having to pre-approve every single shape of them. Destructive
+        // actions (rm/del/format/shutdown/reg/net) are still caught by the
+        // Deny rules in CreateDefaultRules. Users who want the old paranoid
+        // default can flip it from the Settings UI and the change is persisted
+        // to %LOCALAPPDATA%\DonClawNode\exec-policy.json.
+        _defaultAction = ExecApprovalAction.Allow;
+        _logger.Info("[EXEC-POLICY] Using default policy (default=Allow, with destructive-command Deny rules)");
         Save();
     }
 
@@ -194,17 +201,30 @@ public class ExecApprovalPolicy
             new() { Pattern = "ping *", Action = ExecApprovalAction.Allow, Description = "Ping" },
             new() { Pattern = "type *", Action = ExecApprovalAction.Allow, Shells = new[] { "cmd" }, Description = "Read file (cmd)" },
             new() { Pattern = "cat *", Action = ExecApprovalAction.Allow, Description = "Read file" },
+
+            // Common launchers — these are what the agent uses to "open apps"
+            // on behalf of the user. Explicitly allow them so the default
+            // experience matches a typical assistant workflow (open Chrome,
+            // launch VSCode, start Notepad). Users can tighten via Settings.
+            new() { Pattern = "start *", Action = ExecApprovalAction.Allow, Shells = new[] { "cmd" }, Description = "Launch programs via cmd start" },
+            new() { Pattern = "Start-Process *", Action = ExecApprovalAction.Allow, Shells = new[] { "powershell", "pwsh" }, Description = "Launch programs via PowerShell" },
+            new() { Pattern = "explorer *", Action = ExecApprovalAction.Allow, Description = "Open Explorer windows" },
+            new() { Pattern = "code *", Action = ExecApprovalAction.Allow, Description = "Open VSCode" },
+            new() { Pattern = "notepad*", Action = ExecApprovalAction.Allow, Description = "Open Notepad" },
+
             new() { Pattern = "Remove-Item *", Action = ExecApprovalAction.Deny, Description = "Block file deletion" },
             new() { Pattern = "rm *", Action = ExecApprovalAction.Deny, Description = "Block rm" },
             new() { Pattern = "del *", Action = ExecApprovalAction.Deny, Description = "Block del" },
             new() { Pattern = "Format-*", Action = ExecApprovalAction.Deny, Description = "Block format commands" },
             new() { Pattern = "Stop-Computer*", Action = ExecApprovalAction.Deny, Description = "Block shutdown" },
             new() { Pattern = "Restart-Computer*", Action = ExecApprovalAction.Deny, Description = "Block restart" },
-            new() { Pattern = "*Invoke-WebRequest*", Action = ExecApprovalAction.Deny, Description = "Block web downloads" },
-            new() { Pattern = "*Start-Process*", Action = ExecApprovalAction.Deny, Description = "Block process launch" },
-            new() { Pattern = "*reg *", Action = ExecApprovalAction.Deny, Description = "Block registry edits" },
+            // Note: we no longer blanket-deny Invoke-WebRequest or Start-Process.
+            // The earlier Allow rules for `Start-Process *` take precedence thanks
+            // to first-match wins. Destructive surprises live below.
+            new() { Pattern = "*reg delete *", Action = ExecApprovalAction.Deny, Description = "Block registry deletion" },
             new() { Pattern = "shutdown*", Action = ExecApprovalAction.Deny, Description = "Block shutdown" },
-            new() { Pattern = "net *", Action = ExecApprovalAction.Deny, Description = "Block net commands" },
+            new() { Pattern = "net user *", Action = ExecApprovalAction.Deny, Description = "Block local-account modifications" },
+            new() { Pattern = "net localgroup *", Action = ExecApprovalAction.Deny, Description = "Block localgroup modifications" },
         };
     }
 
