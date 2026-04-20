@@ -38,7 +38,7 @@ public class SettingsForm : Form
     private Button _loginBtn = null!;
     private Label _loginErrorLabel = null!;
     private Label _userLabel = null!;
-    private Button _logoutBtn = null!;
+    private LinkLabel _logoutBtn = null!;
     private ListBox _instancesList = null!;
     private Button _connectInstanceBtn = null!;
     private Button _refreshBtn = null!;
