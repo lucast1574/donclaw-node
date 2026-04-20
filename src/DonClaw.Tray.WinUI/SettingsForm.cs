@@ -65,7 +65,7 @@ public class SettingsForm : Form
     private struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
     #endregion
 
-    private const int W = 400, H_LOGIN = 280, H_FULL = 520, R = 12;
+    private const int W = 400, H_LOGIN = 240, H_FULL = 460, R = 12;
 
     public SettingsForm(SettingsManager settings, NodeService nodeService)
     {
@@ -251,7 +251,7 @@ public class SettingsForm : Form
         _autoStartCheck = new CheckBox
         {
             Text = "Start with Windows", ForeColor = Color.FromArgb(160, 160, 170), Font = new Font("Segoe UI", 8.5f),
-            Location = new Point(20, 430), AutoSize = true, Checked = AutoStartManager.IsEnabled()
+            Location = new Point(20, 376), AutoSize = true, Checked = AutoStartManager.IsEnabled()
         };
         _autoStartCheck.CheckedChanged += (_, _) => { AutoStartManager.Set(_autoStartCheck.Checked); _settings.AutoStart = _autoStartCheck.Checked; _settings.Save(); };
         Controls.Add(_autoStartCheck);
@@ -260,23 +260,23 @@ public class SettingsForm : Form
         _modeToggleBtn = new LinkLabel
         {
             Text = "Modo libre →", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(120, 160, 255),
-            LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(W - 120, 432), AutoSize = true
+            LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(W - 120, 378), AutoSize = true
         };
         _modeToggleBtn.LinkClicked += (_, _) => ToggleMode();
         Controls.Add(_modeToggleBtn);
 
-        Controls.Add(new Panel { Location = new Point(20, 456), Size = new Size(W - 40, 1), BackColor = Color.FromArgb(50, 50, 58) });
+        Controls.Add(new Panel { Location = new Point(20, 400), Size = new Size(W - 40, 1), BackColor = Color.FromArgb(50, 50, 58) });
 
         // Quick links
-        var logsLink = new LinkLabel { Text = "📄 Logs", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(20, 464), AutoSize = true };
+        var logsLink = new LinkLabel { Text = "📄 Logs", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(20, 408), AutoSize = true };
         logsLink.LinkClicked += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Logger.LogFilePath) { UseShellExecute = true }); } catch { } };
         Controls.Add(logsLink);
 
-        var exitLink = new LinkLabel { Text = "❌ Exit", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(100, 464), AutoSize = true };
+        var exitLink = new LinkLabel { Text = "❌ Exit", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(140, 140, 150), LinkColor = Color.FromArgb(140, 140, 150), Location = new Point(100, 408), AutoSize = true };
         exitLink.LinkClicked += (_, _) => { _nodeService?.Dispose(); Application.Exit(); };
         Controls.Add(exitLink);
 
-        Controls.Add(new Label { Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}", ForeColor = Color.FromArgb(50, 50, 60), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, 490), Size = new Size(W - 40, 20), TextAlign = ContentAlignment.MiddleCenter });
+        Controls.Add(new Label { Text = $"DonClaw Node v{Program.Version}  ·  © {DateTime.Now.Year}", ForeColor = Color.FromArgb(50, 50, 60), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, 432), Size = new Size(W - 40, 20), TextAlign = ContentAlignment.MiddleCenter });
     }
 
     // ==================== MODE TOGGLE ====================
@@ -488,9 +488,6 @@ public class SettingsForm : Form
             _settings.ConnectedInstanceId = inst.Id;
             _settings.Save();
 
-            // Reset device identity for clean pairing to new instance
-            ResetDeviceIdentity();
-
             _nodeService.Disconnect();
             await _nodeService.ConnectAsync(inst.GatewayUrl, inst.GatewayToken, inst.GatewayToken);
         }
@@ -518,7 +515,6 @@ public class SettingsForm : Form
             return;
         }
 
-        if (host != _settings.GatewayHost || token != _settings.Token) ResetDeviceIdentity();
         _settings.GatewayHost = host;
         _settings.Token = token;
         _settings.Save();
