@@ -33,10 +33,9 @@ public class SettingsForm : Form
     private Panel _donclawPanel = null!;
     private Panel _loginPanel = null!;
     private Panel _instancesPanel = null!;
-    private TextBox _emailInput = null!;
-    private TextBox _passwordInput = null!;
     private Button _loginBtn = null!;
     private Label _loginErrorLabel = null!;
+    private AuthCallbackServer? _authServer;
     private Label _userLabel = null!;
     private LinkLabel _logoutBtn = null!;
     private ListBox _instancesList = null!;
@@ -65,7 +64,7 @@ public class SettingsForm : Form
     private struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
     #endregion
 
-    private const int W = 400, H = 520, R = 12;
+    private const int W = 400, H_LOGIN = 280, H_FULL = 520, R = 12;
 
     public SettingsForm(SettingsManager settings, NodeService nodeService)
     {
@@ -95,7 +94,7 @@ public class SettingsForm : Form
     private void InitializeUI()
     {
         Text = "DonClaw Node";
-        Size = new Size(W, H);
+        Size = new Size(W, H_LOGIN); // Start compact, expand after login
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -104,7 +103,7 @@ public class SettingsForm : Form
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10);
         DoubleBuffered = true;
-        Region = CreateRoundedRegion(W, H, R);
+        Region = CreateRoundedRegion(W, H_LOGIN, R);
 
         BuildTitleBar();
         BuildStatusBar();
@@ -114,6 +113,7 @@ public class SettingsForm : Form
 
         _freePanel.Visible = false;
         _donclawPanel.Visible = true;
+        _modeToggleBtn.Visible = false; // Hide mode toggle until logged in
     }
 
     // ==================== TITLE ====================
@@ -146,32 +146,24 @@ public class SettingsForm : Form
     {
         _donclawPanel = new Panel { Location = new Point(0, 96), Size = new Size(W, 330), BackColor = BackColor };
 
-        // --- Login subpanel ---
-        _loginPanel = new Panel { Location = new Point(20, 0), Size = new Size(W - 40, 180), BackColor = BackColor };
+        // --- Login subpanel (compact: just one button) ---
+        _loginPanel = new Panel { Location = new Point(20, 10), Size = new Size(W - 40, 90), BackColor = BackColor };
 
-        _loginPanel.Controls.Add(new Label { Text = "Iniciar sesión en DonClaw", Font = new Font("Segoe UI", 10, FontStyle.Bold), Location = new Point(0, 0), AutoSize = true });
+        _loginPanel.Controls.Add(new Label
+        {
+            Text = "Conecta tu cuenta de DonClaw",
+            Font = new Font("Segoe UI", 9f),
+            ForeColor = Color.FromArgb(160, 160, 170),
+            Location = new Point(0, 0),
+            AutoSize = true
+        });
 
-        _loginPanel.Controls.Add(new Label { Text = "Email", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(160, 160, 170), Location = new Point(0, 30), AutoSize = true });
-        _emailInput = new TextBox { Location = new Point(0, 50), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f) };
-        _loginPanel.Controls.Add(_emailInput);
-
-        _loginPanel.Controls.Add(new Label { Text = "Contraseña", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(160, 160, 170), Location = new Point(0, 82), AutoSize = true });
-        _passwordInput = new TextBox { Location = new Point(0, 102), Size = new Size(W - 40, 28), BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), UseSystemPasswordChar = true };
-        _loginPanel.Controls.Add(_passwordInput);
-
-        _loginBtn = MakeButton("Iniciar sesión", new Point(0, 140), new Size(W - 40, 36), Color.FromArgb(55, 120, 250));
+        _loginBtn = MakeButton("🔐 Iniciar sesión en donclaw.com", new Point(0, 28), new Size(W - 40, 38), Color.FromArgb(55, 120, 250));
         _loginBtn.Click += OnLoginClick;
         _loginPanel.Controls.Add(_loginBtn);
 
-        _loginErrorLabel = new Label { Text = "", ForeColor = Color.FromArgb(240, 100, 100), Font = new Font("Segoe UI", 8f), Location = new Point(0, 178), Size = new Size(W - 40, 18) };
+        _loginErrorLabel = new Label { Text = "", ForeColor = Color.FromArgb(240, 100, 100), Font = new Font("Segoe UI", 8f), Location = new Point(0, 72), Size = new Size(W - 40, 18) };
         _loginPanel.Controls.Add(_loginErrorLabel);
-
-        var googleLink = new LinkLabel { Text = "O inicia sesión con Google →", Font = new Font("Segoe UI", 8.5f), ForeColor = Color.FromArgb(120, 160, 255), LinkColor = Color.FromArgb(120, 160, 255), Location = new Point(0, 178), AutoSize = true };
-        googleLink.LinkClicked += (_, _) =>
-        {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://donclaw.com/login") { UseShellExecute = true }); } catch { }
-        };
-        _loginPanel.Controls.Add(googleLink);
 
         _donclawPanel.Controls.Add(_loginPanel);
 
@@ -302,39 +294,60 @@ public class SettingsForm : Form
     // ==================== DONCLAW LOGIN ====================
     private async void OnLoginClick(object? sender, EventArgs e)
     {
-        var email = _emailInput.Text.Trim();
-        var password = _passwordInput.Text.Trim();
-        if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
-        {
-            _loginErrorLabel.Text = "Ingresa email y contraseña";
-            return;
-        }
-
         _loginBtn.Enabled = false;
-        _loginBtn.Text = "⏳ Ingresando...";
+        _loginBtn.Text = "⏳ Esperando login en el navegador...";
         _loginErrorLabel.Text = "";
 
-        _apiClient?.Dispose();
-        _apiClient = new DonClawApiClient(new TrayLogger());
-        var result = await _apiClient.LoginAsync(email, password);
-
-        _loginBtn.Enabled = true;
-        _loginBtn.Text = "Iniciar sesión";
-
-        if (!result.Success)
+        try
         {
-            _loginErrorLabel.Text = result.Error ?? "Error al iniciar sesión";
-            return;
+            // Start ephemeral HTTP server for callback
+            _authServer?.Dispose();
+            _authServer = new AuthCallbackServer();
+
+            // Open browser to DonClaw login with callback port
+            var loginUrl = $"https://donclaw.com/auth/node-callback?port={_authServer.Port}";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(loginUrl) { UseShellExecute = true });
+
+            // Wait for callback (5 min timeout)
+            var callbackTask = _authServer.WaitForCallbackAsync(TimeSpan.FromMinutes(5));
+
+            // Show cancel option
+            _loginErrorLabel.Text = "Se abrió el navegador. Inicia sesión ahí.";
+            _loginErrorLabel.ForeColor = Color.FromArgb(160, 160, 170);
+
+            var (token, email, userId) = await callbackTask;
+
+            // Save session
+            _settings.DonClawToken = token;
+            _settings.DonClawEmail = email;
+            _settings.DonClawUserId = userId;
+            _settings.Save();
+
+            // Init API client with the received token
+            _apiClient?.Dispose();
+            _apiClient = new DonClawApiClient(new TrayLogger());
+            _apiClient.SetToken(token);
+
+            ShowLoggedInState();
+            await RefreshInstances();
         }
-
-        // Save session
-        _settings.DonClawToken = result.Token ?? "";
-        _settings.DonClawEmail = result.Email ?? "";
-        _settings.DonClawUserId = result.UserId ?? "";
-        _settings.Save();
-
-        ShowLoggedInState();
-        await RefreshInstances();
+        catch (TimeoutException)
+        {
+            _loginErrorLabel.Text = "Tiempo agotado. Inténtalo de nuevo.";
+            _loginErrorLabel.ForeColor = Color.FromArgb(240, 100, 100);
+        }
+        catch (Exception ex)
+        {
+            _loginErrorLabel.Text = ex.Message;
+            _loginErrorLabel.ForeColor = Color.FromArgb(240, 100, 100);
+        }
+        finally
+        {
+            _loginBtn.Enabled = true;
+            _loginBtn.Text = "🔐 Iniciar sesión en donclaw.com";
+            _authServer?.Dispose();
+            _authServer = null;
+        }
     }
 
     private void ShowLoggedInState()
@@ -342,6 +355,11 @@ public class SettingsForm : Form
         _loginPanel.Visible = false;
         _instancesPanel.Visible = true;
         _userLabel.Text = $"👤 {_settings.DonClawEmail}";
+        _modeToggleBtn.Visible = true;
+
+        // Expand window to full size
+        Size = new Size(W, H_FULL);
+        Region = CreateRoundedRegion(W, H_FULL, R);
     }
 
     private void OnLogoutClick(object? sender, EventArgs e)
@@ -354,8 +372,15 @@ public class SettingsForm : Form
         _instances.Clear();
         _loginPanel.Visible = true;
         _instancesPanel.Visible = false;
-        _emailInput.Text = "";
-        _passwordInput.Text = "";
+        _freePanel.Visible = false;
+        _donclawPanel.Visible = true;
+        _isDonClawMode = true;
+        _modeToggleBtn.Visible = false;
+        _modeToggleBtn.Text = "Modo libre →";
+
+        // Shrink window back to compact
+        Size = new Size(W, H_LOGIN);
+        Region = CreateRoundedRegion(W, H_LOGIN, R);
     }
 
     // ==================== INSTANCES ====================
