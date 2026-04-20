@@ -80,6 +80,35 @@ public class SettingsForm : Form
             else UpdateStatus(s);
         };
 
+        // Auto-recover from expired/consumed DonClaw bootstrap tokens. When
+        // the gateway closes the socket with 'pairing required', ask the
+        // backend for a freshly-minted setup code and reconnect with it.
+        // Rate-limited in the client so this only fires every ~15s. In Free
+        // mode (no _apiClient) we do nothing and the existing reconnect loop
+        // just keeps retrying until the operator approves manually.
+        _nodeService.AuthRejected += async (_, reason) =>
+        {
+            if (_apiClient == null || string.IsNullOrEmpty(_settings.ConnectedInstanceId)) return;
+            try
+            {
+                var fresh = await _apiClient.GetSetupCodeAsync(_settings.ConnectedInstanceId);
+                if (fresh == null
+                    || !string.IsNullOrEmpty(fresh.Error)
+                    || string.IsNullOrWhiteSpace(fresh.GatewayUrl)
+                    || string.IsNullOrWhiteSpace(fresh.GatewayToken))
+                {
+                    return;
+                }
+                _settings.GatewayHost = fresh.GatewayUrl!;
+                _settings.Token = fresh.GatewayToken!;
+                _settings.BootstrapToken = fresh.GatewayToken!;
+                _settings.Save();
+                _nodeService.Disconnect();
+                await _nodeService.ConnectAsync(fresh.GatewayUrl!, fresh.GatewayToken!, fresh.GatewayToken!);
+            }
+            catch { /* non-fatal: retry loop will keep trying */ }
+        };
+
         // Restore previous session
         if (_settings.IsDonClawLoggedIn)
         {
@@ -553,21 +582,43 @@ public class SettingsForm : Form
 
         try
         {
-            // Connect directly using gatewayUrl + gatewayToken from the API.
-            // The gatewayToken serves as both the auth token AND the bootstrap token
-            // (instances have dangerouslyDisableDeviceAuth=true, so pairing is automatic).
-            //
-            // Live slot (GatewayHost/Token/BootstrapToken) reflects this DonClaw instance.
-            // Free-mode slot (FreeGatewayHost/FreeToken/FreeBootstrapToken) is untouched
-            // so the user's LAN credentials survive when they toggle back.
-            _settings.GatewayHost = inst.GatewayUrl;
-            _settings.Token = inst.GatewayToken;
-            _settings.BootstrapToken = inst.GatewayToken;
+            // Fetch a FRESH setup code right before connecting. The backend's
+            // bootstrap tokens are one-shot and expire after 10 minutes, so the
+            // one we got when we first listed instances may already be stale.
+            // GET /instances/{id}/setup-code triggers the server to mint a new
+            // bootstrap if the stored one is close to expiring. Falls back to
+            // the token from the list if the extra call fails.
+            var gatewayUrl = inst.GatewayUrl;
+            var bootstrap = inst.GatewayToken;
+            if (_apiClient != null)
+            {
+                try
+                {
+                    var fresh = await _apiClient.GetSetupCodeAsync(inst.Id);
+                    if (fresh != null
+                        && string.IsNullOrEmpty(fresh.Error)
+                        && !string.IsNullOrWhiteSpace(fresh.GatewayUrl)
+                        && !string.IsNullOrWhiteSpace(fresh.GatewayToken))
+                    {
+                        gatewayUrl = fresh.GatewayUrl!;
+                        bootstrap = fresh.GatewayToken!;
+                    }
+                }
+                catch { /* non-fatal: use the list value */ }
+            }
+
+            // Live slot (GatewayHost/Token/BootstrapToken) reflects this DonClaw
+            // instance. Free-mode slot (FreeGatewayHost/FreeToken/Free...) is
+            // untouched so the user's LAN credentials survive when they toggle
+            // back between modes.
+            _settings.GatewayHost = gatewayUrl;
+            _settings.Token = bootstrap;
+            _settings.BootstrapToken = bootstrap;
             _settings.ConnectedInstanceId = inst.Id;
             _settings.Save();
 
             _nodeService.Disconnect();
-            await _nodeService.ConnectAsync(inst.GatewayUrl, inst.GatewayToken, inst.GatewayToken);
+            await _nodeService.ConnectAsync(gatewayUrl, bootstrap, bootstrap);
         }
         catch (Exception ex)
         {

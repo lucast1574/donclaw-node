@@ -18,6 +18,9 @@ public class NodeService : IDisposable
     /// <summary>Raised when the gateway has issued a permanent device token and the one-shot bootstrap token must be cleared from settings.</summary>
     public event EventHandler? BootstrapConsumed;
 
+    /// <summary>Raised when the gateway rejects our auth (e.g. bootstrap expired). Tray can fetch a fresh setup code and reconnect.</summary>
+    public event EventHandler<string>? AuthRejected;
+
     public ConnectionStatus CurrentStatus { get; private set; } = ConnectionStatus.Disconnected;
     public bool IsConnected => _client?.IsConnected ?? false;
     public string? ShortDeviceId => _client?.ShortDeviceId;
@@ -51,6 +54,7 @@ public class NodeService : IDisposable
         _client.StatusChanged += (_, s) => { CurrentStatus = s; StatusChanged?.Invoke(this, s); };
         _client.PairingStatusChanged += (_, a) => PairingStatusChanged?.Invoke(this, a);
         _client.BootstrapConsumed += (_, _) => BootstrapConsumed?.Invoke(this, EventArgs.Empty);
+        _client.AuthRejected += (_, reason) => AuthRejected?.Invoke(this, reason);
         _client.InvokeReceived += (_, r) => _logger.Info($"Invoke: {r.Command}");
 
         RegisterCapabilitiesWithClient();

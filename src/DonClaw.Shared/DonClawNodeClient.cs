@@ -64,6 +64,17 @@ public class DonClawNodeClient : WebSocketClientBase
     /// <summary>Fires when the gateway issues a permanent device token and the bootstrap token is no longer needed.</summary>
     public event EventHandler? BootstrapConsumed;
 
+    /// <summary>
+    /// Fires when the gateway rejects our auth (e.g. 'pairing required' /
+    /// 'unauthorized'). Consumers can subscribe to fetch a fresh bootstrap
+    /// token from their backend and reissue the connection. Rate-limited to
+    /// at most once every AuthRejectionCooldownMs to avoid thrashing.
+    /// </summary>
+    public event EventHandler<string>? AuthRejected;
+
+    private const int AuthRejectionCooldownMs = 15_000;
+    private long _lastAuthRejectionMs;
+
     public DonClawNodeClient(string gatewayUrl, string token, string dataPath, IOpenClawLogger? logger = null, string? bootstrapToken = null)
         : base(gatewayUrl, token, logger)
     {
@@ -134,6 +145,17 @@ public class DonClawNodeClient : WebSocketClientBase
         {
             _logger.Warn($"Gateway rejected our auth ('{closeDesc}'). Clearing stored token for {GatewayUrlForDisplay} so the next reconnect falls back to the bootstrap token.");
             _deviceIdentity.ClearDeviceTokenFor(GatewayUrlForDisplay);
+
+            // Let the tray fetch a fresh bootstrap. Rate-limited so we don't
+            // hammer the backend if the gateway is stuck rejecting — the
+            // auto-reconnect loop runs every ~1s and we don't want 60
+            // setup-code fetches per minute.
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - _lastAuthRejectionMs > AuthRejectionCooldownMs)
+            {
+                _lastAuthRejectionMs = nowMs;
+                try { AuthRejected?.Invoke(this, closeDesc); } catch { /* don't let a listener break the socket handler */ }
+            }
         }
     }
 
