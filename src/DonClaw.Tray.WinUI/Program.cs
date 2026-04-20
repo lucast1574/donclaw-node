@@ -115,13 +115,18 @@ static class Program
         _localApi.Start();
 
         // Auto-connect if configured
-        if (_settings.IsConfigured)
+        // Auto-connect only if we have a valid host AND token
+        var hasValidConnection = _settings.IsConfigured &&
+            !string.IsNullOrWhiteSpace(_settings.Token);
+        if (hasValidConnection)
         {
-            var bootstrap = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? null : _settings.BootstrapToken;
+            var host = _settings.GatewayHost;
+            var token = _settings.Token;
+            var bootstrap = string.IsNullOrWhiteSpace(_settings.BootstrapToken) ? token : _settings.BootstrapToken;
             _ = Task.Run(async () =>
             {
-                try { await _nodeService.ConnectAsync(_settings.GatewayHost, _settings.Token, bootstrap); }
-                catch (Exception ex) { Logger.Error($"Connect failed: {ex.Message}"); }
+                try { await _nodeService.ConnectAsync(host, token, bootstrap); }
+                catch (Exception ex) { Logger.Error($"Auto-connect failed: {ex.Message}"); }
             });
         }
         else
