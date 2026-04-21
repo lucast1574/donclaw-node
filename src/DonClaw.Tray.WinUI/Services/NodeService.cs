@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using DonClaw.Shared;
 using DonClaw.Shared.Capabilities;
 
@@ -118,6 +120,63 @@ public class NodeService : IDisposable
         foreach (var cap in _capabilities)
             _client.RegisterCapability(cap);
         _logger.Info($"Registered {_capabilities.Count} capabilities with client");
+    }
+
+    /// <summary>
+    /// Wire the ScreenCapability event handlers to the ScreenshotCache so that
+    /// screen.capture / screen.list work both via gateway invoke AND local API.
+    /// Must be called after the ScreenshotCache is created and started.
+    /// </summary>
+    public void WireScreenCapture(ScreenshotCache cache)
+    {
+        var screenCap = _capabilities.OfType<ScreenCapability>().FirstOrDefault();
+        if (screenCap == null)
+        {
+            _logger.Warn("WireScreenCapture: ScreenCapability not found");
+            return;
+        }
+
+        screenCap.CaptureRequested += async (args) =>
+        {
+            // Get a fresh screenshot from the cache
+            var jpeg = cache.GetFreshJpeg(maxAgeMs: 200);
+            var (w, h) = cache.GetScreenSize();
+
+            return new ScreenCaptureResult
+            {
+                Format = "jpeg",
+                Width = w,
+                Height = h,
+                Base64 = Convert.ToBase64String(jpeg)
+            };
+        };
+
+        screenCap.ListRequested += async () =>
+        {
+            var screens = Screen.AllScreens;
+            var result = new ScreenInfo[screens.Length];
+            for (int i = 0; i < screens.Length; i++)
+            {
+                var s = screens[i];
+                result[i] = new ScreenInfo
+                {
+                    Index = i,
+                    Name = s.DeviceName,
+                    IsPrimary = s.Primary,
+                    Width = s.Bounds.Width,
+                    Height = s.Bounds.Height,
+                    X = s.Bounds.X,
+                    Y = s.Bounds.Y,
+                    WorkingX = s.WorkingArea.X,
+                    WorkingY = s.WorkingArea.Y,
+                    WorkingWidth = s.WorkingArea.Width,
+                    WorkingHeight = s.WorkingArea.Height
+                };
+            }
+            return result;
+        };
+
+        _logger.Info("ScreenCapability wired to ScreenshotCache");
     }
 
     public void Dispose() { _client?.Dispose(); }

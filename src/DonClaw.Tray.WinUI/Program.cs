@@ -116,6 +116,9 @@ static class Program
         _screenshotCache = new ScreenshotCache();
         _screenshotCache.Start();
 
+        // Wire screen.capture / screen.list to the cache so they work via gateway invoke
+        _nodeService.WireScreenCapture(_screenshotCache);
+
         // Start text finder (local OCR)
         _textFinder = new TextFinder();
 
