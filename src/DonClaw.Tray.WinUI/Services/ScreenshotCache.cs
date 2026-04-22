@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -144,6 +145,97 @@ public class ScreenshotCache : IDisposable
 
         var jpeg = CompressToJpeg(bmp, quality, maxWidth);
         return (jpeg, w, h);
+    }
+
+    /// <summary>
+    /// Capture a screenshot on-demand and encode it with the requested format
+    /// ("jpeg" or "webp"). WebP is ∼25-35% smaller than JPEG at visually
+    /// equivalent quality — useful for AI control loops where every KB over
+    /// the wire costs tokens/latency.
+    ///
+    /// WebP path is ASYNC because Windows.Graphics.Imaging.BitmapEncoder is
+    /// async-only. JPEG path remains sync via System.Drawing (reused from
+    /// CaptureWithParams).
+    /// </summary>
+    public async Task<(byte[] Bytes, int Width, int Height, string Format)> CaptureWithFormatAsync(
+        int maxWidth, int quality, string format)
+    {
+        format = (format ?? "jpeg").ToLowerInvariant();
+        if (format != "webp" && format != "jpeg" && format != "jpg")
+            format = "jpeg";
+
+        // JPEG path: delegate to the sync version so we don't diverge.
+        if (format == "jpeg" || format == "jpg")
+        {
+            var (jpeg, w, h) = CaptureWithParams(maxWidth, quality);
+            return (jpeg, w, h, "jpeg");
+        }
+
+        // WebP path. Windows.Graphics.Imaging wants a SoftwareBitmap, which is
+        // awkward to build from raw GDI pixels, so we round-trip through a
+        // BMP in-memory decoder. Cost is ~10-30 ms extra — still much cheaper
+        // than the bandwidth savings on a typical screen.
+        if (maxWidth <= 0) maxWidth = DefaultMaxWidth;
+        quality = Math.Clamp(quality, 1, 100);
+
+        var screen = Screen.PrimaryScreen!;
+        var screenW = screen.Bounds.Width;
+        var screenH = screen.Bounds.Height;
+
+        using var bmp = new Bitmap(screenW, screenH);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
+        }
+
+        Bitmap src = bmp;
+        bool disposeSrc = false;
+        if (maxWidth > 0 && bmp.Width > maxWidth)
+        {
+            float scale = (float)maxWidth / bmp.Width;
+            int newH = (int)(bmp.Height * scale);
+            src = new Bitmap(bmp, maxWidth, newH);
+            disposeSrc = true;
+        }
+
+        try
+        {
+            using var bmpMs = new MemoryStream();
+            src.Save(bmpMs, ImageFormat.Bmp);
+            bmpMs.Position = 0;
+
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(
+                bmpMs.AsRandomAccessStream());
+            var softwareBmp = await decoder.GetSoftwareBitmapAsync();
+
+            using var outStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+            var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
+                Windows.Graphics.Imaging.BitmapEncoder.WebpEncoderId, outStream);
+
+            // WebP encoder accepts ImageQuality 0.0-1.0.
+            var qualityOpt = new Windows.Graphics.Imaging.BitmapTypedValue(
+                quality / 100.0, Windows.Foundation.PropertyType.Single);
+            encoder.BitmapProperties.SetPropertiesAsync(
+                new Dictionary<string, Windows.Graphics.Imaging.BitmapTypedValue>
+                {
+                    ["ImageQuality"] = qualityOpt,
+                }).GetAwaiter().GetResult();
+
+            encoder.SetSoftwareBitmap(softwareBmp);
+            await encoder.FlushAsync();
+
+            outStream.Seek(0);
+            var bytes = new byte[outStream.Size];
+            using var reader = new Windows.Storage.Streams.DataReader(outStream.GetInputStreamAt(0));
+            await reader.LoadAsync((uint)outStream.Size);
+            reader.ReadBytes(bytes);
+
+            return (bytes, src.Width, src.Height, "webp");
+        }
+        finally
+        {
+            if (disposeSrc) src.Dispose();
+        }
     }
 
     /// <summary>Capture a specific region as JPEG.</summary>

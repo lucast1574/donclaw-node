@@ -136,21 +136,38 @@ public class NodeService : IDisposable
             return;
         }
 
-        screenCap.CaptureRequested += (args) =>
+        screenCap.CaptureRequested += async (args) =>
         {
-            // Honor caller-provided maxWidth/quality so requesters that want
-            // smaller payloads for bandwidth/LLM-latency actually get them.
-            // (Previously args were silently discarded and everything came back
-            // as the cache's default 960px@Q55 — ~90 KB per frame.)
-            var (jpeg, w, h) = cache.CaptureWithParams(args.MaxWidth, args.Quality);
-
-            return Task.FromResult(new ScreenCaptureResult
+            // Honor caller-provided maxWidth/quality/format so requesters that
+            // want smaller payloads for bandwidth/LLM-latency actually get
+            // them. (Previously args were silently discarded and everything
+            // came back as the cache's default 960px@Q55 — ~90 KB per frame.)
+            //
+            // `format`: "jpeg" (default) or "webp". WebP is ~25-35% smaller
+            // at visually equivalent quality but costs ~10-30 ms extra CPU.
+            var wantsWebP = string.Equals(args.Format, "webp", StringComparison.OrdinalIgnoreCase);
+            if (wantsWebP)
             {
-                Format = "jpeg",
-                Width = w,
-                Height = h,
-                Base64 = Convert.ToBase64String(jpeg)
-            });
+                var (bytes, w, h, fmt) = await cache.CaptureWithFormatAsync(args.MaxWidth, args.Quality, "webp");
+                return new ScreenCaptureResult
+                {
+                    Format = fmt,
+                    Width = w,
+                    Height = h,
+                    Base64 = Convert.ToBase64String(bytes)
+                };
+            }
+            else
+            {
+                var (jpeg, w, h) = cache.CaptureWithParams(args.MaxWidth, args.Quality);
+                return new ScreenCaptureResult
+                {
+                    Format = "jpeg",
+                    Width = w,
+                    Height = h,
+                    Base64 = Convert.ToBase64String(jpeg)
+                };
+            }
         };
 
         // Note: PerceiveRequested is wired separately in WirePerceive() because
@@ -201,7 +218,11 @@ public class NodeService : IDisposable
 
         screenCap.PerceiveRequested += async (args) =>
         {
-            var r = await finder.PerceiveScreen(args.ThumbMaxWidth, args.ThumbQuality, args.IncludeThumbnail);
+            var r = await finder.PerceiveScreen(
+                args.ThumbMaxWidth,
+                args.ThumbQuality,
+                args.IncludeThumbnail,
+                args.ThumbFormat);
 
             // Shape the OCR lines to match the LocalApi /ocr/perceive response
             // (text + words with coords). Kept identical so callers can use
@@ -222,6 +243,7 @@ public class NodeService : IDisposable
                     : "",
                 ThumbnailWidth = r.ThumbnailWidth,
                 ThumbnailHeight = r.ThumbnailHeight,
+                ThumbnailFormat = string.IsNullOrEmpty(r.ThumbnailFormat) ? "jpeg" : r.ThumbnailFormat,
             };
         };
 

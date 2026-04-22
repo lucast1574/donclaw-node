@@ -513,6 +513,7 @@ public class LocalApiServer : IDisposable
         int thumbW = 640;
         int thumbQ = 40;
         bool includeThumb = true;
+        string thumbFormat = "jpeg";
 
         if (method == "POST" && !string.IsNullOrWhiteSpace(body))
         {
@@ -523,6 +524,7 @@ public class LocalApiServer : IDisposable
                 if (root.TryGetProperty("thumbMaxWidth", out var tw) && tw.TryGetInt32(out var twi)) thumbW = twi;
                 if (root.TryGetProperty("thumbQuality", out var tq) && tq.TryGetInt32(out var tqi)) thumbQ = tqi;
                 if (root.TryGetProperty("includeThumbnail", out var it) && it.ValueKind == JsonValueKind.False) includeThumb = false;
+                if (root.TryGetProperty("thumbFormat", out var tf) && tf.ValueKind == JsonValueKind.String) thumbFormat = tf.GetString() ?? "jpeg";
             }
             catch (JsonException)
             {
@@ -535,22 +537,24 @@ public class LocalApiServer : IDisposable
             if (query.TryGetValue("thumb_w", out var twq) && int.TryParse(twq, out var twi)) thumbW = twi;
             if (query.TryGetValue("thumb_q", out var tqq) && int.TryParse(tqq, out var tqi)) thumbQ = tqi;
             if (query.TryGetValue("no_thumb", out var nt) && (nt == "1" || nt == "true")) includeThumb = false;
+            if (query.TryGetValue("thumb_format", out var tfq)) thumbFormat = tfq;
         }
 
-        var r = await Finder.PerceiveScreen(thumbW, thumbQ, includeThumb);
+        var r = await Finder.PerceiveScreen(thumbW, thumbQ, includeThumb, thumbFormat);
 
         object? thumbnail = null;
         if (includeThumb && r.ThumbnailJpeg.Length > 0)
         {
+            var fmt = string.IsNullOrEmpty(r.ThumbnailFormat) ? "jpeg" : r.ThumbnailFormat;
             var b64 = Convert.ToBase64String(r.ThumbnailJpeg);
             thumbnail = new
             {
-                format = "jpeg",
+                format = fmt,
                 width = r.ThumbnailWidth,
                 height = r.ThumbnailHeight,
                 bytes = r.ThumbnailJpeg.Length,
                 base64 = b64,
-                dataUri = $"data:image/jpeg;base64,{b64}",
+                dataUri = $"data:image/{fmt};base64,{b64}",
             };
         }
 

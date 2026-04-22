@@ -41,8 +41,9 @@ public class ScreenCapability : NodeCapabilityBase
         var thumbMaxWidth = GetIntArg(request.Args, "thumbMaxWidth", 640);
         var thumbQuality = GetIntArg(request.Args, "thumbQuality", 40);
         var includeThumb = GetBoolArg(request.Args, "includeThumbnail", true);
+        var thumbFormat = GetStringArg(request.Args, "thumbFormat", "jpeg") ?? "jpeg";
 
-        Logger.Info($"screen.perceive: thumbW={thumbMaxWidth} Q={thumbQuality} thumb={includeThumb}");
+        Logger.Info($"screen.perceive: thumbW={thumbMaxWidth} Q={thumbQuality} thumb={includeThumb} fmt={thumbFormat}");
 
         try
         {
@@ -51,18 +52,20 @@ public class ScreenCapability : NodeCapabilityBase
                 ThumbMaxWidth = thumbMaxWidth,
                 ThumbQuality = thumbQuality,
                 IncludeThumbnail = includeThumb,
+                ThumbFormat = thumbFormat,
             });
 
             object? thumbnail = null;
             if (includeThumb && !string.IsNullOrEmpty(r.ThumbnailBase64))
             {
+                var fmt = string.IsNullOrEmpty(r.ThumbnailFormat) ? "jpeg" : r.ThumbnailFormat;
                 thumbnail = new
                 {
-                    format = "jpeg",
+                    format = fmt,
                     width = r.ThumbnailWidth,
                     height = r.ThumbnailHeight,
                     base64 = r.ThumbnailBase64,
-                    image = $"data:image/jpeg;base64,{r.ThumbnailBase64}",
+                    image = $"data:image/{fmt};base64,{r.ThumbnailBase64}",
                 };
             }
 
@@ -180,6 +183,8 @@ public class ScreenPerceiveArgs
     public int ThumbMaxWidth { get; set; } = 640;
     public int ThumbQuality { get; set; } = 40;
     public bool IncludeThumbnail { get; set; } = true;
+    /// <summary>"jpeg" (default) or "webp". WebP is ~25-35% smaller.</summary>
+    public string ThumbFormat { get; set; } = "jpeg";
 }
 
 public class ScreenPerceiveResult
@@ -191,6 +196,7 @@ public class ScreenPerceiveResult
     public string ThumbnailBase64 { get; set; } = "";
     public int ThumbnailWidth { get; set; }
     public int ThumbnailHeight { get; set; }
+    public string ThumbnailFormat { get; set; } = "jpeg";
 }
 
 public class ScreenInfo

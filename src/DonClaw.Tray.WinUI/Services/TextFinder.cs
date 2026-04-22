@@ -207,18 +207,26 @@ public class TextFinder
 
     /// <summary>
     /// One-shot "perceive" primitive: takes a SINGLE screenshot, runs OCR on
-    /// it AND returns a small JPEG thumbnail, in one trip.
+    /// it AND returns a small thumbnail (JPEG or WebP), in one trip.
     ///
     /// Purpose: let the AI control loop replace `screenshot + OCR` (two
     /// captures + two payloads) with a single `/perceive` call that returns
     /// text-with-coords (cheap for the LLM) plus a tiny backup thumbnail.
     ///
     /// thumbMaxWidth / thumbQuality control the thumbnail size. Defaults
-    /// (640 @ Q40) yield ~8-15 KB on typical screens.
+    /// (640 @ Q40) yield ~8-15 KB on typical screens for JPEG, ~5-11 KB
+    /// for WebP.
     /// </summary>
-    public async Task<PerceiveResult> PerceiveScreen(int thumbMaxWidth = 640, int thumbQuality = 40, bool includeThumbnail = true)
+    public async Task<PerceiveResult> PerceiveScreen(
+        int thumbMaxWidth = 640,
+        int thumbQuality = 40,
+        bool includeThumbnail = true,
+        string thumbFormat = "jpeg")
     {
         var result = new PerceiveResult();
+        thumbFormat = (thumbFormat ?? "jpeg").ToLowerInvariant();
+        if (thumbFormat != "webp" && thumbFormat != "jpeg" && thumbFormat != "jpg")
+            thumbFormat = "jpeg";
 
         try
         {
@@ -278,7 +286,7 @@ public class TextFinder
                 Logger.Error($"PerceiveScreen OCR failed: {ex.Message}");
             }
 
-            // Thumbnail path — downscale + JPEG compress from the SAME bitmap.
+            // Thumbnail path — downscale from the SAME bitmap and compress.
             if (includeThumbnail)
             {
                 try
@@ -298,14 +306,50 @@ public class TextFinder
 
                     try
                     {
-                        using var tms = new MemoryStream();
-                        var enc = ImageCodecInfo.GetImageEncoders()
-                            .First(e => e.FormatID == ImageFormat.Jpeg.Guid);
-                        var prms = new EncoderParameters(1);
-                        prms.Param[0] = new EncoderParameter(Encoder.Quality, (long)tq);
-                        thumbSrc.Save(tms, enc, prms);
+                        if (thumbFormat == "webp")
+                        {
+                            // WebP path via Windows.Graphics.Imaging — round
+                            // through BMP to SoftwareBitmap, then encode.
+                            using var bmpMs = new MemoryStream();
+                            thumbSrc.Save(bmpMs, ImageFormat.Bmp);
+                            bmpMs.Position = 0;
+                            var dec = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(
+                                bmpMs.AsRandomAccessStream());
+                            var softBmp = await dec.GetSoftwareBitmapAsync();
 
-                        result.ThumbnailJpeg = tms.ToArray();
+                            using var outStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+                            var enc = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
+                                Windows.Graphics.Imaging.BitmapEncoder.WebpEncoderId, outStream);
+                            await enc.BitmapProperties.SetPropertiesAsync(
+                                new System.Collections.Generic.Dictionary<string, Windows.Graphics.Imaging.BitmapTypedValue>
+                                {
+                                    ["ImageQuality"] = new Windows.Graphics.Imaging.BitmapTypedValue(
+                                        tq / 100.0, Windows.Foundation.PropertyType.Single),
+                                });
+                            enc.SetSoftwareBitmap(softBmp);
+                            await enc.FlushAsync();
+
+                            outStream.Seek(0);
+                            var bytes = new byte[outStream.Size];
+                            using var reader = new Windows.Storage.Streams.DataReader(outStream.GetInputStreamAt(0));
+                            await reader.LoadAsync((uint)outStream.Size);
+                            reader.ReadBytes(bytes);
+
+                            result.ThumbnailJpeg = bytes;
+                            result.ThumbnailFormat = "webp";
+                        }
+                        else
+                        {
+                            using var tms = new MemoryStream();
+                            var enc = ImageCodecInfo.GetImageEncoders()
+                                .First(e => e.FormatID == ImageFormat.Jpeg.Guid);
+                            var prms = new EncoderParameters(1);
+                            prms.Param[0] = new EncoderParameter(Encoder.Quality, (long)tq);
+                            thumbSrc.Save(tms, enc, prms);
+
+                            result.ThumbnailJpeg = tms.ToArray();
+                            result.ThumbnailFormat = "jpeg";
+                        }
                         result.ThumbnailWidth = thumbSrc.Width;
                         result.ThumbnailHeight = thumbSrc.Height;
                     }
@@ -332,6 +376,7 @@ public class TextFinder
 /// <summary>
 /// Combined OCR + thumbnail result for the `/perceive` endpoint.
 /// ThumbnailJpeg may be empty if the caller asked to skip it or it failed.
+/// Despite the name the bytes match ThumbnailFormat ("jpeg" or "webp").
 /// </summary>
 public class PerceiveResult
 {
@@ -341,6 +386,7 @@ public class PerceiveResult
     public byte[] ThumbnailJpeg { get; set; } = Array.Empty<byte>();
     public int ThumbnailWidth { get; set; }
     public int ThumbnailHeight { get; set; }
+    public string ThumbnailFormat { get; set; } = "jpeg";
 }
 
 public class TextMatch
