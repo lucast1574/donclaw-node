@@ -41,7 +41,6 @@ public class SettingsForm : Form
     private Label _userLabel = null!;
     private LinkLabel _logoutBtn = null!;
     private ListBox _instancesList = null!;
-    private Button _connectInstanceBtn = null!;
     private Button _refreshBtn = null!;
     private List<DonClawApiClient.ConnectableInstance> _instances = new();
 
@@ -235,8 +234,21 @@ public class SettingsForm : Form
         _statusDot = new Panel { Size = new Size(10, 10), Location = new Point(12, 12), BackColor = Color.Gray };
         _statusDot.Paint += (s, e) => { e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using var b = new SolidBrush(_statusDot.BackColor); e.Graphics.FillEllipse(b, 0, 0, 9, 9); };
         _statusLabel = new Label { Text = "Disconnected", ForeColor = Color.FromArgb(160, 160, 160), Font = new Font("Segoe UI", 9f), Location = new Point(28, 8), AutoSize = true };
+        // "Connected to <machine>" label — lives inside the status bar itself
+        // so it's visible in BOTH DonClaw mode and Free mode (was previously
+        // nested inside _instancesPanel, which hid it in Free mode).
+        _machineLabel = new Label
+        {
+            Text = "",
+            ForeColor = Color.FromArgb(50, 205, 50),
+            Font = new Font("Segoe UI", 8.5f),
+            Location = new Point(140, 9),
+            AutoSize = true,
+            Visible = false,
+        };
         sp.Controls.Add(_statusDot);
         sp.Controls.Add(_statusLabel);
+        sp.Controls.Add(_machineLabel);
         Controls.Add(sp);
     }
 
@@ -291,19 +303,22 @@ public class SettingsForm : Form
             ItemHeight = 44
         };
         _instancesList.DrawItem += OnDrawInstanceItem;
-        _instancesList.DoubleClick += OnConnectInstanceClick; // Double click to connect
+        _instancesList.DoubleClick += OnConnectInstanceClick; // Double click to connect (single action — no separate button)
         _instancesPanel.Controls.Add(_instancesList);
 
-        _connectInstanceBtn = MakeButton("⚡ Conectar", new Point(0, 206), new Size((W - 48) / 2, 34), Color.FromArgb(55, 120, 250));
-        _connectInstanceBtn.Click += OnConnectInstanceClick;
-        _instancesPanel.Controls.Add(_connectInstanceBtn);
+        // Hint label: double-click is the only way to connect (no redundant button)
+        _instancesPanel.Controls.Add(new Label
+        {
+            Text = "💡 Doble clic para conectar",
+            ForeColor = Color.FromArgb(120, 120, 135),
+            Font = new Font("Segoe UI", 8f, FontStyle.Italic),
+            Location = new Point(0, 202),
+            AutoSize = true,
+        });
 
-        _refreshBtn = MakeButton("🔄 Refrescar", new Point((W - 48) / 2 + 8, 206), new Size((W - 48) / 2, 34), Color.FromArgb(50, 50, 58));
+        _refreshBtn = MakeButton("🔄 Refrescar instancias", new Point(0, 224), new Size(W - 40, 32), Color.FromArgb(50, 50, 58));
         _refreshBtn.Click += async (_, _) => await RefreshInstances();
         _instancesPanel.Controls.Add(_refreshBtn);
-
-        _machineLabel = new Label { Text = "", ForeColor = Color.FromArgb(50, 205, 50), Font = new Font("Segoe UI", 8.5f), Location = new Point(0, 248), AutoSize = true, Visible = false };
-        _instancesPanel.Controls.Add(_machineLabel);
 
         _donclawPanel.Controls.Add(_instancesPanel);
         Controls.Add(_donclawPanel);
@@ -321,10 +336,10 @@ public class SettingsForm : Form
             Location = new Point(20, y + 22), Size = new Size(W - 40, 28),
             BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White,
             BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f),
-            // Prefill with previously used Free-mode host so users don't retype every time
-            Text = !string.IsNullOrWhiteSpace(_settings.FreeGatewayHost)
-                ? _settings.FreeGatewayHost
-                : _settings.GatewayHost,
+            // Prefill ONLY with previously saved Free-mode host. Never fall back
+            // to the DonClaw live slot (_settings.GatewayHost) — those creds
+            // belong to the DonClaw instance and must not leak into Free mode.
+            Text = _settings.FreeGatewayHost,
         };
         _freePanel.Controls.Add(_hostInput);
         _freePanel.Controls.Add(new Label { Text = "ws://local-ip:18789 or wss://your.tailscale.ts.net", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
@@ -337,9 +352,8 @@ public class SettingsForm : Form
             BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.White,
             BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f),
             UseSystemPasswordChar = true,
-            Text = !string.IsNullOrWhiteSpace(_settings.FreeToken)
-                ? _settings.FreeToken
-                : _settings.Token,
+            // Same rule as host: Free mode is strictly isolated from DonClaw creds.
+            Text = _settings.FreeToken,
         };
         _freePanel.Controls.Add(_tokenInput);
         _freePanel.Controls.Add(new Label { Text = "Gateway token from your OpenClaw instance", ForeColor = Color.FromArgb(80, 80, 90), Font = new Font("Segoe UI", 7.5f), Location = new Point(20, y + 50), AutoSize = true });
@@ -482,15 +496,11 @@ public class SettingsForm : Form
 
         if (!_isDonClawMode)
         {
-            // Always show the Free-mode credentials, not whatever is currently live
-            // (which might be a DonClaw instance URL). Falls back to the live slot
-            // if no Free-mode credentials have ever been saved.
-            _hostInput.Text = !string.IsNullOrWhiteSpace(_settings.FreeGatewayHost)
-                ? _settings.FreeGatewayHost
-                : _settings.GatewayHost;
-            _tokenInput.Text = !string.IsNullOrWhiteSpace(_settings.FreeToken)
-                ? _settings.FreeToken
-                : _settings.Token;
+            // Free mode is strictly isolated from DonClaw creds. Never fall
+            // back to _settings.GatewayHost/Token — those belong to DonClaw
+            // and would leak the instance URL/bootstrap into the Free form.
+            _hostInput.Text = _settings.FreeGatewayHost;
+            _tokenInput.Text = _settings.FreeToken;
         }
     }
 
@@ -746,8 +756,8 @@ public class SettingsForm : Form
         if (idx < 0 || idx >= _instances.Count) return;
 
         var inst = _instances[idx];
-        _connectInstanceBtn.Enabled = false;
-        _connectInstanceBtn.Text = "⏳ Conectando...";
+        // Disable the list while connecting so the user can't double-click another item mid-connect.
+        _instancesList.Enabled = false;
 
         try
         {
@@ -796,8 +806,7 @@ public class SettingsForm : Form
         }
         finally
         {
-            _connectInstanceBtn.Enabled = true;
-            _connectInstanceBtn.Text = "Conectar";
+            _instancesList.Enabled = true;
         }
     }
 

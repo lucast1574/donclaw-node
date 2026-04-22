@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "8.4.0";
+    public const string Version = "8.4.1";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
