@@ -105,6 +105,47 @@ public class ScreenshotCache : IDisposable
         lock (_lock) return _cachedJpeg ?? Array.Empty<byte>();
     }
 
+    /// <summary>
+    /// Capture a screenshot on-demand with caller-specified quality and maxWidth.
+    /// Falls back to the pre-compressed cache when the requested params match
+    /// cache defaults (zero extra CPU); otherwise captures fresh and compresses
+    /// with the requested params.
+    ///
+    /// Used by screen.capture so callers that pass small maxWidth/quality for
+    /// bandwidth savings actually get small payloads (before this, params were
+    /// ignored and everything was 960px@Q55 regardless).
+    /// </summary>
+    public (byte[] Jpeg, int Width, int Height) CaptureWithParams(int maxWidth, int quality, int maxCacheAgeMs = 200)
+    {
+        // Normalize bad inputs to safe defaults instead of throwing.
+        if (maxWidth <= 0) maxWidth = DefaultMaxWidth;
+        quality = Math.Clamp(quality, 1, 100);
+
+        // Fast path: if caller wants exactly what the cache holds and it's fresh,
+        // skip the recapture + recompress.
+        if (maxWidth == DefaultMaxWidth && quality == DefaultQuality)
+        {
+            if (CacheAgeMs < 0 || CacheAgeMs > maxCacheAgeMs)
+                CaptureNow();
+            lock (_lock)
+                return (_cachedJpeg ?? Array.Empty<byte>(), _cachedWidth, _cachedHeight);
+        }
+
+        // Slow path: capture fresh and compress with the requested params.
+        var screen = Screen.PrimaryScreen!;
+        var w = screen.Bounds.Width;
+        var h = screen.Bounds.Height;
+
+        using var bmp = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
+        }
+
+        var jpeg = CompressToJpeg(bmp, quality, maxWidth);
+        return (jpeg, w, h);
+    }
+
     /// <summary>Capture a specific region as JPEG.</summary>
     public byte[] CaptureRegion(int x, int y, int w, int h, int quality = 70)
     {

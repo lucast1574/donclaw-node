@@ -136,20 +136,25 @@ public class NodeService : IDisposable
             return;
         }
 
-        screenCap.CaptureRequested += async (args) =>
+        screenCap.CaptureRequested += (args) =>
         {
-            // Get a fresh screenshot from the cache
-            var jpeg = cache.GetFreshJpeg(maxAgeMs: 200);
-            var (w, h) = cache.GetScreenSize();
+            // Honor caller-provided maxWidth/quality so requesters that want
+            // smaller payloads for bandwidth/LLM-latency actually get them.
+            // (Previously args were silently discarded and everything came back
+            // as the cache's default 960px@Q55 — ~90 KB per frame.)
+            var (jpeg, w, h) = cache.CaptureWithParams(args.MaxWidth, args.Quality);
 
-            return new ScreenCaptureResult
+            return Task.FromResult(new ScreenCaptureResult
             {
                 Format = "jpeg",
                 Width = w,
                 Height = h,
                 Base64 = Convert.ToBase64String(jpeg)
-            };
+            });
         };
+
+        // Note: PerceiveRequested is wired separately in WirePerceive() because
+        // it needs the TextFinder (created outside NodeService in Program.cs).
 
         screenCap.ListRequested += async () =>
         {
@@ -177,6 +182,50 @@ public class NodeService : IDisposable
         };
 
         _logger.Info("ScreenCapability wired to ScreenshotCache");
+    }
+
+    /// <summary>
+    /// Wire the ScreenCapability.PerceiveRequested event to the TextFinder
+    /// so that `screen.perceive` (via gateway invoke OR LocalApi) returns
+    /// OCR-with-coords + a tiny thumbnail in a single capture. Must be called
+    /// after the TextFinder is created in Program.cs.
+    /// </summary>
+    public void WirePerceive(TextFinder finder)
+    {
+        var screenCap = _capabilities.OfType<ScreenCapability>().FirstOrDefault();
+        if (screenCap == null)
+        {
+            _logger.Warn("WirePerceive: ScreenCapability not found");
+            return;
+        }
+
+        screenCap.PerceiveRequested += async (args) =>
+        {
+            var r = await finder.PerceiveScreen(args.ThumbMaxWidth, args.ThumbQuality, args.IncludeThumbnail);
+
+            // Shape the OCR lines to match the LocalApi /ocr/perceive response
+            // (text + words with coords). Kept identical so callers can use
+            // the same parsing code whether they hit gateway invoke or LocalApi.
+            var lines = r.Lines.Select(l => new
+            {
+                text = l.Text,
+                words = l.Words.Select(w => new { w.Text, w.X, w.Y }).ToArray(),
+            }).ToArray();
+
+            return new ScreenPerceiveResult
+            {
+                ScreenWidth = r.ScreenWidth,
+                ScreenHeight = r.ScreenHeight,
+                Lines = lines,
+                ThumbnailBase64 = r.ThumbnailJpeg.Length > 0
+                    ? Convert.ToBase64String(r.ThumbnailJpeg)
+                    : "",
+                ThumbnailWidth = r.ThumbnailWidth,
+                ThumbnailHeight = r.ThumbnailHeight,
+            };
+        };
+
+        _logger.Info("ScreenCapability wired to TextFinder (perceive)");
     }
 
     public void Dispose() { _client?.Dispose(); }

@@ -287,6 +287,10 @@ public class LocalApiServer : IDisposable
                 await HandleOcr(stream);
                 break;
 
+            case "/perceive":
+                await HandlePerceive(stream, method, body, query);
+                break;
+
             case "/sequence":
                 if (method != "POST") { await SendError(stream, 405, "POST required"); break; }
                 await HandleSequence(stream, body);
@@ -483,6 +487,80 @@ public class LocalApiServer : IDisposable
             screenWidth = dump.ScreenWidth,
             screenHeight = dump.ScreenHeight,
             lines = dump.Lines.Select(l => new { text = l.Text, words = l.Words.Select(w => new { w.Text, w.X, w.Y }) })
+        });
+    }
+
+    /// <summary>
+    /// Combined perceive primitive: one capture → OCR-with-coords + tiny
+    /// JPEG thumbnail in a single round-trip.
+    ///
+    /// GET /perceive?thumb_w=640&amp;thumb_q=40&amp;no_thumb=1
+    /// POST /perceive {"thumbMaxWidth":640,"thumbQuality":40,"includeThumbnail":true}
+    ///
+    /// Purpose: replace the legacy `/screenshot + /ocr` two-trip flow for the
+    /// AI control loop. Text-with-coords is what the LLM actually needs; the
+    /// thumbnail is a cheap visual fallback (~8-15 KB) for cases where the
+    /// model wants to disambiguate visually.
+    /// </summary>
+    private async Task HandlePerceive(NetworkStream stream, string method, string body, Dictionary<string, string> query)
+    {
+        if (Finder == null)
+        {
+            await SendError(stream, 503, "OCR not available");
+            return;
+        }
+
+        int thumbW = 640;
+        int thumbQ = 40;
+        bool includeThumb = true;
+
+        if (method == "POST" && !string.IsNullOrWhiteSpace(body))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("thumbMaxWidth", out var tw) && tw.TryGetInt32(out var twi)) thumbW = twi;
+                if (root.TryGetProperty("thumbQuality", out var tq) && tq.TryGetInt32(out var tqi)) thumbQ = tqi;
+                if (root.TryGetProperty("includeThumbnail", out var it) && it.ValueKind == JsonValueKind.False) includeThumb = false;
+            }
+            catch (JsonException)
+            {
+                await SendError(stream, 400, "Invalid JSON");
+                return;
+            }
+        }
+        else
+        {
+            if (query.TryGetValue("thumb_w", out var twq) && int.TryParse(twq, out var twi)) thumbW = twi;
+            if (query.TryGetValue("thumb_q", out var tqq) && int.TryParse(tqq, out var tqi)) thumbQ = tqi;
+            if (query.TryGetValue("no_thumb", out var nt) && (nt == "1" || nt == "true")) includeThumb = false;
+        }
+
+        var r = await Finder.PerceiveScreen(thumbW, thumbQ, includeThumb);
+
+        object? thumbnail = null;
+        if (includeThumb && r.ThumbnailJpeg.Length > 0)
+        {
+            var b64 = Convert.ToBase64String(r.ThumbnailJpeg);
+            thumbnail = new
+            {
+                format = "jpeg",
+                width = r.ThumbnailWidth,
+                height = r.ThumbnailHeight,
+                bytes = r.ThumbnailJpeg.Length,
+                base64 = b64,
+                dataUri = $"data:image/jpeg;base64,{b64}",
+            };
+        }
+
+        await SendJson(stream, new
+        {
+            ok = true,
+            screenWidth = r.ScreenWidth,
+            screenHeight = r.ScreenHeight,
+            lines = r.Lines.Select(l => new { text = l.Text, words = l.Words.Select(w => new { w.Text, w.X, w.Y }) }),
+            thumbnail,
         });
     }
 

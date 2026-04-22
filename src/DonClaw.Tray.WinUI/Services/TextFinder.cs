@@ -204,6 +204,143 @@ public class TextFinder
 
         return dump;
     }
+
+    /// <summary>
+    /// One-shot "perceive" primitive: takes a SINGLE screenshot, runs OCR on
+    /// it AND returns a small JPEG thumbnail, in one trip.
+    ///
+    /// Purpose: let the AI control loop replace `screenshot + OCR` (two
+    /// captures + two payloads) with a single `/perceive` call that returns
+    /// text-with-coords (cheap for the LLM) plus a tiny backup thumbnail.
+    ///
+    /// thumbMaxWidth / thumbQuality control the thumbnail size. Defaults
+    /// (640 @ Q40) yield ~8-15 KB on typical screens.
+    /// </summary>
+    public async Task<PerceiveResult> PerceiveScreen(int thumbMaxWidth = 640, int thumbQuality = 40, bool includeThumbnail = true)
+    {
+        var result = new PerceiveResult();
+
+        try
+        {
+            var screen = Screen.PrimaryScreen!;
+            result.ScreenWidth = screen.Bounds.Width;
+            result.ScreenHeight = screen.Bounds.Height;
+
+            // Single capture shared by both OCR and thumbnail generation.
+            using var bmp = new Bitmap(screen.Bounds.Width, screen.Bounds.Height);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
+            }
+
+            // OCR path — feed the bitmap to Windows.Media.Ocr.
+            try
+            {
+                using var ms = new MemoryStream();
+                bmp.Save(ms, ImageFormat.Bmp);
+                ms.Position = 0;
+
+                var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(
+                    ms.AsRandomAccessStream());
+                var softwareBmp = await decoder.GetSoftwareBitmapAsync();
+
+                var ocrEngine = Windows.Media.Ocr.OcrEngine.TryCreateFromUserProfileLanguages()
+                             ?? Windows.Media.Ocr.OcrEngine.TryCreateFromLanguage(
+                                 new Windows.Globalization.Language("en-US"));
+
+                if (ocrEngine != null)
+                {
+                    var ocrResult = await ocrEngine.RecognizeAsync(softwareBmp);
+                    foreach (var line in ocrResult.Lines)
+                    {
+                        var lineEntry = new OcrLine
+                        {
+                            Text = line.Text,
+                            Words = line.Words.Select(w => new TextMatch
+                            {
+                                Text = w.Text,
+                                X = (int)(w.BoundingRect.X + w.BoundingRect.Width / 2),
+                                Y = (int)(w.BoundingRect.Y + w.BoundingRect.Height / 2),
+                                Left = (int)w.BoundingRect.X,
+                                Top = (int)w.BoundingRect.Y,
+                                Width = (int)w.BoundingRect.Width,
+                                Height = (int)w.BoundingRect.Height
+                            }).ToList()
+                        };
+                        result.Lines.Add(lineEntry);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // OCR failing shouldn't kill the whole perceive — we still want
+                // the thumbnail as a fallback signal for the caller.
+                Logger.Error($"PerceiveScreen OCR failed: {ex.Message}");
+            }
+
+            // Thumbnail path — downscale + JPEG compress from the SAME bitmap.
+            if (includeThumbnail)
+            {
+                try
+                {
+                    int tw = thumbMaxWidth <= 0 ? 640 : thumbMaxWidth;
+                    int tq = Math.Clamp(thumbQuality, 1, 100);
+
+                    Bitmap thumbSrc = bmp;
+                    bool disposeThumb = false;
+                    if (bmp.Width > tw)
+                    {
+                        float scale = (float)tw / bmp.Width;
+                        int th = (int)(bmp.Height * scale);
+                        thumbSrc = new Bitmap(bmp, tw, th);
+                        disposeThumb = true;
+                    }
+
+                    try
+                    {
+                        using var tms = new MemoryStream();
+                        var enc = ImageCodecInfo.GetImageEncoders()
+                            .First(e => e.FormatID == ImageFormat.Jpeg.Guid);
+                        var prms = new EncoderParameters(1);
+                        prms.Param[0] = new EncoderParameter(Encoder.Quality, (long)tq);
+                        thumbSrc.Save(tms, enc, prms);
+
+                        result.ThumbnailJpeg = tms.ToArray();
+                        result.ThumbnailWidth = thumbSrc.Width;
+                        result.ThumbnailHeight = thumbSrc.Height;
+                    }
+                    finally
+                    {
+                        if (disposeThumb) thumbSrc.Dispose();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"PerceiveScreen thumbnail failed: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"PerceiveScreen failed: {ex.Message}");
+        }
+
+        return result;
+    }
+}
+
+/// <summary>
+/// Combined OCR + thumbnail result for the `/perceive` endpoint.
+/// ThumbnailJpeg may be empty if the caller asked to skip it or it failed.
+/// </summary>
+public class PerceiveResult
+{
+    public int ScreenWidth { get; set; }
+    public int ScreenHeight { get; set; }
+    public List<OcrLine> Lines { get; set; } = new();
+    public byte[] ThumbnailJpeg { get; set; } = Array.Empty<byte>();
+    public int ThumbnailWidth { get; set; }
+    public int ThumbnailHeight { get; set; }
 }
 
 public class TextMatch

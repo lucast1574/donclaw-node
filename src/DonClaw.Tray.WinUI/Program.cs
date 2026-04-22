@@ -13,7 +13,7 @@ namespace DonClaw.Tray;
 
 static class Program
 {
-    public const string Version = "8.4.1";
+    public const string Version = "8.5.0";
     public const int LocalApiPort = 9800;
 
     private static NotifyIcon? _trayIcon;
@@ -121,6 +121,10 @@ static class Program
 
         // Start text finder (local OCR)
         _textFinder = new TextFinder();
+
+        // Wire screen.perceive (OCR + tiny thumbnail) to the TextFinder so the
+        // AI control loop can replace screenshot+OCR with one round-trip.
+        _nodeService.WirePerceive(_textFinder);
 
         // Start local API server (direct HTTP access to capabilities).
         // Auth: loopback always allowed (same machine). LAN callers need the

@@ -10,13 +10,15 @@ public class ScreenCapability : NodeCapabilityBase
     private static readonly string[] _commands = new[]
     {
         "screen.capture",
-        "screen.list"
+        "screen.list",
+        "screen.perceive"
     };
 
     public override IReadOnlyList<string> Commands => _commands;
 
     public event Func<ScreenCaptureArgs, Task<ScreenCaptureResult>>? CaptureRequested;
     public event Func<Task<ScreenInfo[]>>? ListRequested;
+    public event Func<ScreenPerceiveArgs, Task<ScreenPerceiveResult>>? PerceiveRequested;
 
     public ScreenCapability(IOpenClawLogger logger) : base(logger) { }
 
@@ -26,15 +28,67 @@ public class ScreenCapability : NodeCapabilityBase
         {
             "screen.capture" => await HandleCaptureAsync(request),
             "screen.list" => await HandleListAsync(request),
+            "screen.perceive" => await HandlePerceiveAsync(request),
             _ => Error($"Unknown command: {request.Command}")
         };
     }
 
+    private async Task<NodeInvokeResponse> HandlePerceiveAsync(NodeInvokeRequest request)
+    {
+        if (PerceiveRequested == null)
+            return Error("Screen perceive not available");
+
+        var thumbMaxWidth = GetIntArg(request.Args, "thumbMaxWidth", 640);
+        var thumbQuality = GetIntArg(request.Args, "thumbQuality", 40);
+        var includeThumb = GetBoolArg(request.Args, "includeThumbnail", true);
+
+        Logger.Info($"screen.perceive: thumbW={thumbMaxWidth} Q={thumbQuality} thumb={includeThumb}");
+
+        try
+        {
+            var r = await PerceiveRequested(new ScreenPerceiveArgs
+            {
+                ThumbMaxWidth = thumbMaxWidth,
+                ThumbQuality = thumbQuality,
+                IncludeThumbnail = includeThumb,
+            });
+
+            object? thumbnail = null;
+            if (includeThumb && !string.IsNullOrEmpty(r.ThumbnailBase64))
+            {
+                thumbnail = new
+                {
+                    format = "jpeg",
+                    width = r.ThumbnailWidth,
+                    height = r.ThumbnailHeight,
+                    base64 = r.ThumbnailBase64,
+                    image = $"data:image/jpeg;base64,{r.ThumbnailBase64}",
+                };
+            }
+
+            return Success(new
+            {
+                screenWidth = r.ScreenWidth,
+                screenHeight = r.ScreenHeight,
+                lines = r.Lines,
+                thumbnail,
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("screen.perceive failed", ex);
+            return Error($"Perceive failed: {ex.Message}");
+        }
+    }
+
     private async Task<NodeInvokeResponse> HandleCaptureAsync(NodeInvokeRequest request)
     {
-        var format = GetStringArg(request.Args, "format", "png");
-        var maxWidth = GetIntArg(request.Args, "maxWidth", 1920);
-        var quality = GetIntArg(request.Args, "quality", 80);
+        // Sane defaults for the AI control loop: 1280px @ Q60 is still very
+        // readable but ~3x smaller payload than 1920px @ Q80. Callers that
+        // need the full-res original can still pass explicit maxWidth/quality.
+        var format = GetStringArg(request.Args, "format", "jpeg");
+        var maxWidth = GetIntArg(request.Args, "maxWidth", 1280);
+        var quality = GetIntArg(request.Args, "quality", 60);
         var monitor = GetIntArg(request.Args, "monitor", 0);
         var screenIndex = GetIntArg(request.Args, "screenIndex", monitor);
         var includePointer = GetBoolArg(request.Args, "includePointer", true);
@@ -106,9 +160,9 @@ public class ScreenCapability : NodeCapabilityBase
 
 public class ScreenCaptureArgs
 {
-    public string Format { get; set; } = "png";
-    public int MaxWidth { get; set; } = 1920;
-    public int Quality { get; set; } = 80;
+    public string Format { get; set; } = "jpeg";
+    public int MaxWidth { get; set; } = 1280;
+    public int Quality { get; set; } = 60;
     public int MonitorIndex { get; set; } = 0;
     public bool IncludePointer { get; set; } = true;
 }
@@ -119,6 +173,24 @@ public class ScreenCaptureResult
     public int Width { get; set; }
     public int Height { get; set; }
     public string Base64 { get; set; } = "";
+}
+
+public class ScreenPerceiveArgs
+{
+    public int ThumbMaxWidth { get; set; } = 640;
+    public int ThumbQuality { get; set; } = 40;
+    public bool IncludeThumbnail { get; set; } = true;
+}
+
+public class ScreenPerceiveResult
+{
+    public int ScreenWidth { get; set; }
+    public int ScreenHeight { get; set; }
+    /// <summary>Shape: [{ text, words: [{Text, X, Y}] }] — serialized as-is.</summary>
+    public object Lines { get; set; } = Array.Empty<object>();
+    public string ThumbnailBase64 { get; set; } = "";
+    public int ThumbnailWidth { get; set; }
+    public int ThumbnailHeight { get; set; }
 }
 
 public class ScreenInfo
