@@ -29,3 +29,4 @@ desktop.ini
 # Node tray local secrets (never commit these)
 **/settings.json.local
 **/device-key*.json
+installer/output/

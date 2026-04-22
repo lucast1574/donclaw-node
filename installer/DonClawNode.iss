@@ -16,17 +16,17 @@
 ; ==============================================================================
 
 #define MyAppName "DonClaw Node"
-#define MyAppVersion "8.3.1"
+#define MyAppVersion "8.5.1"
 #define MyAppPublisher "Neopatron Ltd."
 #define MyAppURL "https://donclaw.com"
 #define MyAppExeName "DonClawNode.exe"
 
 ; Where the publish output lives. Using a relative path so CI / contributors
 ; don't need to patch this file before building. Kept in sync with the path the
-; current dotnet-publish target uses (`-o C:\donclaw-build-v8.3.1`).
+; current dotnet-publish target uses (`-o C:\donclaw-build-v8.5.1`).
 ; Override on the command line with: /DPublishDir="C:\your\path"
 #ifndef PublishDir
-#define PublishDir "C:\donclaw-build-v8.3.1"
+#define PublishDir "C:\donclaw-build-v8.5.1"
 #endif
 
 [Setup]
@@ -78,6 +78,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "autostart"; Description: "Iniciar DonClaw Node con Windows"; GroupDescription: "Inicio automático:"; Flags: checkedonce
+
+[Dirs]
+; Explicit directory creation. Inno Setup will create {app} and any subdirs
+; from [Files] automatically, but we also pre-create the runtime data folder
+; under LocalAppData so the Node doesn't need to mkdir it on first launch.
+; uninsneveruninstall: we don't want to wipe user's device identity / logs
+; on upgrade, and we don't want to wipe it on full uninstall either — if
+; users reinstall they keep their pairing instead of re-approving every time.
+Name: "{app}"; Flags: uninsalwaysuninstall
+Name: "{localappdata}\DonClawNode"; Flags: uninsneveruninstall
 
 [Files]
 ; Ship everything that dotnet publish put into PublishDir. /E = recursive,
