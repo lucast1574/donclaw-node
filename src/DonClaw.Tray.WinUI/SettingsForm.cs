@@ -880,10 +880,50 @@ public class SettingsForm : Form
         if (_disconnectBtn != null) _disconnectBtn.Enabled = status == ConnectionStatus.Connected || status == ConnectionStatus.Connecting;
 
         if (status == ConnectionStatus.Connected)
-        { _machineLabel.Text = $"💻 Connected to {Environment.MachineName}"; _machineLabel.ForeColor = Color.FromArgb(50, 205, 50); _machineLabel.Visible = true; }
+        {
+            // Show which gateway we're connected to so the user can tell at
+            // a glance whether the live session is their self-hosted Free-
+            // mode gateway or a DonClaw cloud instance. Falls back to the
+            // machine name if for some reason we don't have a host string
+            // (shouldn't happen once connected, but keeps old behaviour).
+            var host = FormatGatewayForDisplay(_settings.GatewayHost);
+            _machineLabel.Text = string.IsNullOrWhiteSpace(host)
+                ? $"💻 Connected to {Environment.MachineName}"
+                : $"💻 {host}";
+            _machineLabel.ForeColor = Color.FromArgb(50, 205, 50);
+            _machineLabel.Visible = true;
+        }
         else if (status == ConnectionStatus.Connecting)
-        { _machineLabel.Text = $"💻 Connecting..."; _machineLabel.ForeColor = Color.FromArgb(255, 200, 50); _machineLabel.Visible = true; }
+        {
+            var host = FormatGatewayForDisplay(_settings.GatewayHost);
+            _machineLabel.Text = string.IsNullOrWhiteSpace(host)
+                ? "💻 Connecting..."
+                : $"💻 → {host}";
+            _machineLabel.ForeColor = Color.FromArgb(255, 200, 50);
+            _machineLabel.Visible = true;
+        }
         else { _machineLabel.Visible = false; }
+    }
+
+    /// <summary>
+    /// Pretty-print a gateway URL for the status bar indicator.
+    /// Strips ws://, wss://, and any path so 'wss://d0afb391.app.donclaw.com/__openclaw__/gateway/ws'
+    /// shows as 'd0afb391.app.donclaw.com' and 'ws://192.168.18.86:18789' as
+    /// '192.168.18.86:18789'. Empty/whitespace input returns "".
+    /// </summary>
+    private static string FormatGatewayForDisplay(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        var s = url.Trim();
+        if (s.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) s = s.Substring(6);
+        else if (s.StartsWith("ws://", StringComparison.OrdinalIgnoreCase)) s = s.Substring(5);
+        else if (s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) s = s.Substring(8);
+        else if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) s = s.Substring(7);
+        // Drop everything after the first '/' so the path doesn't clutter
+        // the chip. Keeps host:port intact.
+        var slash = s.IndexOf('/');
+        if (slash > 0) s = s.Substring(0, slash);
+        return s;
     }
 
     // ==================== PLAN VERIFICATION ====================

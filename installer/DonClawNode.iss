@@ -16,17 +16,17 @@
 ; ==============================================================================
 
 #define MyAppName "DonClaw Node"
-#define MyAppVersion "8.5.1"
+#define MyAppVersion "8.5.2"
 #define MyAppPublisher "Neopatron Ltd."
 #define MyAppURL "https://donclaw.com"
 #define MyAppExeName "DonClawNode.exe"
 
 ; Where the publish output lives. Using a relative path so CI / contributors
 ; don't need to patch this file before building. Kept in sync with the path the
-; current dotnet-publish target uses (`-o C:\donclaw-build-v8.5.1`).
+; current dotnet-publish target uses (`-o C:\donclaw-build-v8.5.2`).
 ; Override on the command line with: /DPublishDir="C:\your\path"
 #ifndef PublishDir
-#define PublishDir "C:\donclaw-build-v8.5.1"
+#define PublishDir "C:\donclaw-build-v8.5.2"
 #endif
 
 [Setup]

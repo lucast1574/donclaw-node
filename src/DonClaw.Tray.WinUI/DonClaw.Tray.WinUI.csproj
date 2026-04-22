@@ -7,9 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>DonClawNode</AssemblyName>
-    <Version>8.5.1</Version>
-    <FileVersion>8.5.1.0</FileVersion>
-    <AssemblyVersion>8.5.1.0</AssemblyVersion>
+    <Version>8.5.2</Version>
+    <FileVersion>8.5.2.0</FileVersion>
+    <AssemblyVersion>8.5.2.0</AssemblyVersion>
     <Product>DonClaw Node</Product>
     <Description>Connect your PC to DonClaw</Description>
     <ApplicationIcon>Assets\donclaw.ico</ApplicationIcon>
