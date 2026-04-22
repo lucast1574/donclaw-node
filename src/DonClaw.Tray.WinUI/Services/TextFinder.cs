@@ -308,33 +308,13 @@ public class TextFinder
                     {
                         if (thumbFormat == "webp")
                         {
-                            // WebP path via Windows.Graphics.Imaging — round
-                            // through BMP to SoftwareBitmap, then encode.
-                            using var bmpMs = new MemoryStream();
-                            thumbSrc.Save(bmpMs, ImageFormat.Bmp);
-                            bmpMs.Position = 0;
-                            var dec = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(
-                                bmpMs.AsRandomAccessStream());
-                            var softBmp = await dec.GetSoftwareBitmapAsync();
-
-                            using var outStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
-                            var enc = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
-                                Windows.Graphics.Imaging.BitmapEncoder.WebpEncoderId, outStream);
-                            await enc.BitmapProperties.SetPropertiesAsync(
-                                new System.Collections.Generic.Dictionary<string, Windows.Graphics.Imaging.BitmapTypedValue>
-                                {
-                                    ["ImageQuality"] = new Windows.Graphics.Imaging.BitmapTypedValue(
-                                        tq / 100.0, Windows.Foundation.PropertyType.Single),
-                                });
-                            enc.SetSoftwareBitmap(softBmp);
-                            await enc.FlushAsync();
-
-                            outStream.Seek(0);
-                            var bytes = new byte[outStream.Size];
-                            using var reader = new Windows.Storage.Streams.DataReader(outStream.GetInputStreamAt(0));
-                            await reader.LoadAsync((uint)outStream.Size);
-                            reader.ReadBytes(bytes);
-
+                            // WebP path via SkiaSharp (WIC on net10-windows
+                            // doesn't expose WebpEncoderId). Reuses the same
+                            // helper that ScreenshotCache.CaptureWithFormatAsync
+                            // uses for screen.capture to keep encoding
+                            // behaviour consistent.
+                            var bytes = await Task.Run(() => DonClaw.Tray.Services.ScreenshotCache
+                                .EncodeBitmapAsWebP(thumbSrc, tq));
                             result.ThumbnailJpeg = bytes;
                             result.ThumbnailFormat = "webp";
                         }

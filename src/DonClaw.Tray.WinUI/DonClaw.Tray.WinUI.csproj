@@ -16,6 +16,13 @@
     <ProjectReference Include="..\DonClaw.Shared\DonClaw.Shared.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- WebP encoding for screen.capture / screen.perceive (smaller payloads
+         for AI control loop). WIC on net10-windows doesn't expose WebP,
+         so we lean on SkiaSharp which bundles libwebp. -->
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.8" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

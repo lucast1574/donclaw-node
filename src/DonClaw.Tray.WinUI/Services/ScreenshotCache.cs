@@ -171,10 +171,10 @@ public class ScreenshotCache : IDisposable
             return (jpeg, w, h, "jpeg");
         }
 
-        // WebP path. Windows.Graphics.Imaging wants a SoftwareBitmap, which is
-        // awkward to build from raw GDI pixels, so we round-trip through a
-        // BMP in-memory decoder. Cost is ~10-30 ms extra — still much cheaper
-        // than the bandwidth savings on a typical screen.
+        // WebP path via SkiaSharp. Windows.Graphics.Imaging on net10-windows
+        // does not expose WebpEncoderId so we use Skia's libwebp binding.
+        // Cost is ~10-30 ms extra CPU per capture — well worth it on an AI
+        // control loop where each KB costs tokens and latency.
         if (maxWidth <= 0) maxWidth = DefaultMaxWidth;
         quality = Math.Clamp(quality, 1, 100);
 
@@ -188,53 +188,57 @@ public class ScreenshotCache : IDisposable
             g.CopyFromScreen(screen.Bounds.Location, Point.Empty, screen.Bounds.Size);
         }
 
-        Bitmap src = bmp;
-        bool disposeSrc = false;
-        if (maxWidth > 0 && bmp.Width > maxWidth)
+        // Let Task.Run offload the CPU-heavy encode so the UI thread doesn't
+        // stutter — CopyFromScreen above must stay on-thread.
+        return await Task.Run(() =>
         {
-            float scale = (float)maxWidth / bmp.Width;
-            int newH = (int)(bmp.Height * scale);
-            src = new Bitmap(bmp, maxWidth, newH);
-            disposeSrc = true;
-        }
+            Bitmap src = bmp;
+            bool disposeSrc = false;
+            if (maxWidth > 0 && bmp.Width > maxWidth)
+            {
+                float scale = (float)maxWidth / bmp.Width;
+                int newH = (int)(bmp.Height * scale);
+                src = new Bitmap(bmp, maxWidth, newH);
+                disposeSrc = true;
+            }
 
+            try
+            {
+                var bytes = EncodeBitmapAsWebP(src, quality);
+                return (bytes, src.Width, src.Height, "webp");
+            }
+            finally
+            {
+                if (disposeSrc) src.Dispose();
+            }
+        });
+    }
+
+    /// <summary>
+    /// Shared helper: encode a System.Drawing.Bitmap as WebP bytes via Skia.
+    /// </summary>
+    internal static byte[] EncodeBitmapAsWebP(Bitmap src, int quality)
+    {
+        quality = Math.Clamp(quality, 1, 100);
+
+        // Copy the GDI bitmap pixels into a SKBitmap. Skia wants BGRA8888
+        // and System.Drawing.Bitmap can give us that via LockBits.
+        var rect = new Rectangle(0, 0, src.Width, src.Height);
+        var data = src.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try
         {
-            using var bmpMs = new MemoryStream();
-            src.Save(bmpMs, ImageFormat.Bmp);
-            bmpMs.Position = 0;
+            var info = new SkiaSharp.SKImageInfo(src.Width, src.Height,
+                SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+            using var skBmp = new SkiaSharp.SKBitmap();
+            skBmp.InstallPixels(info, data.Scan0, data.Stride);
 
-            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(
-                bmpMs.AsRandomAccessStream());
-            var softwareBmp = await decoder.GetSoftwareBitmapAsync();
-
-            using var outStream = new Windows.Storage.Streams.InMemoryRandomAccessStream();
-            var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
-                Windows.Graphics.Imaging.BitmapEncoder.WebpEncoderId, outStream);
-
-            // WebP encoder accepts ImageQuality 0.0-1.0.
-            var qualityOpt = new Windows.Graphics.Imaging.BitmapTypedValue(
-                quality / 100.0, Windows.Foundation.PropertyType.Single);
-            encoder.BitmapProperties.SetPropertiesAsync(
-                new Dictionary<string, Windows.Graphics.Imaging.BitmapTypedValue>
-                {
-                    ["ImageQuality"] = qualityOpt,
-                }).GetAwaiter().GetResult();
-
-            encoder.SetSoftwareBitmap(softwareBmp);
-            await encoder.FlushAsync();
-
-            outStream.Seek(0);
-            var bytes = new byte[outStream.Size];
-            using var reader = new Windows.Storage.Streams.DataReader(outStream.GetInputStreamAt(0));
-            await reader.LoadAsync((uint)outStream.Size);
-            reader.ReadBytes(bytes);
-
-            return (bytes, src.Width, src.Height, "webp");
+            using var img = SkiaSharp.SKImage.FromBitmap(skBmp);
+            using var encoded = img.Encode(SkiaSharp.SKEncodedImageFormat.Webp, quality);
+            return encoded.ToArray();
         }
         finally
         {
-            if (disposeSrc) src.Dispose();
+            src.UnlockBits(data);
         }
     }
 
