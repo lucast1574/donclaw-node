@@ -403,8 +403,13 @@ public class DonClawNodeClient : WebSocketClientBase
             method = "connect",
             @params = new
             {
-                minProtocol = 3,
-                maxProtocol = 3,
+                // Bumped to 4 (2026-06-05): the OpenClaw gateway now refuses
+                // anything <4 with "PROTOCOL_MISMATCH". The handshake payload
+                // shape didn't change between 3 and 4 on the node side — the
+                // server-side gates only on the announced range — so this is
+                // a number bump, not a wire format change.
+                minProtocol = 4,
+                maxProtocol = 4,
                 client = new
                 {
                     id = ClientId,
